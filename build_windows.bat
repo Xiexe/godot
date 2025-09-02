@@ -1,9 +1,11 @@
-dotnet nuget add source "%~dp0nuget_godot_cache" --name LocalNugetSource
+mkdir "%~dp0nuget_godot_cache"
+
+dotnet nuget add source "%~dp0nuget_godot_cache" --name nuget_godot_cache
 
 scons platform=windows module_mono_enabled=yes precision=double
 
 "bin/godot.windows.editor.double.x86_64.mono.exe" --headless --generate-mono-glue modules/mono/glue
 
-"./modules/mono/build_scripts/build_assemblies.py" --godot-output-dir="./bin" --push-nupkgs-local LocalNugetSource --precision=double
+"./modules/mono/build_scripts/build_assemblies.py" --godot-output-dir="./bin" --push-nupkgs-local nuget_godot_cache --precision=double
 
 pause
