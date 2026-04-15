@@ -1,0 +1,1294 @@
+diff --git forkSrcPrefix/editor/animation/animation_blend_space_1d_editor.cpp forkDstPrefix/editor/animation/animation_blend_space_1d_editor.cpp
+index 382d00b3934785aee8a2c2bcc0782b41aa9e249b..6261959cc6698175ec53c9358bce0458c26f04fe 100644
+--- forkSrcPrefix/editor/animation/animation_blend_space_1d_editor.cpp
++++ forkDstPrefix/editor/animation/animation_blend_space_1d_editor.cpp
+@@ -345,7 +345,7 @@ void AnimationNodeBlendSpace1DEditor::_update_space() {
+ 	max_value->set_value(blend_space->get_max_space());
+ 	min_value->set_value(blend_space->get_min_space());
+ 
+-	sync->set_pressed(blend_space->is_using_sync());
++	sync_mode->select(blend_space->get_sync_mode());
+ 	interpolation->select(blend_space->get_blend_mode());
+ 
+ 	label_value->set_text(blend_space->get_value_label());
+@@ -371,8 +371,8 @@ void AnimationNodeBlendSpace1DEditor::_config_changed(double) {
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_min_space", blend_space->get_min_space());
+ 	undo_redo->add_do_method(blend_space.ptr(), "set_snap", snap_value->get_value());
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_snap", blend_space->get_snap());
+-	undo_redo->add_do_method(blend_space.ptr(), "set_use_sync", sync->is_pressed());
+-	undo_redo->add_undo_method(blend_space.ptr(), "set_use_sync", blend_space->is_using_sync());
++	undo_redo->add_do_method(blend_space.ptr(), "set_sync_mode", sync_mode->get_selected());
++	undo_redo->add_undo_method(blend_space.ptr(), "set_sync_mode", blend_space->get_sync_mode());
+ 	undo_redo->add_do_method(blend_space.ptr(), "set_blend_mode", interpolation->get_selected());
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_blend_mode", blend_space->get_blend_mode());
+ 	undo_redo->add_do_method(this, "_update_space");
+@@ -596,6 +596,12 @@ void AnimationNodeBlendSpace1DEditor::_notification(int p_what) {
+ 			tool_erase->set_button_icon(get_editor_theme_icon(SNAME("Remove")));
+ 			snap->set_button_icon(get_editor_theme_icon(SNAME("SnapGrid")));
+ 			open_editor->set_button_icon(get_editor_theme_icon(SNAME("Edit")));
++
++			sync_mode->clear();
++			sync_mode->add_item(TTR("No Sync"), 0);
++			sync_mode->add_item(TTR("Absolute"), 1);
++			sync_mode->add_item(TTR("Normalized"), 2);
++
+ 			interpolation->clear();
+ 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackContinuous")), TTR("Continuous"), 0);
+ 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackDiscrete")), TTR("Discrete"), 1);
+@@ -655,7 +661,7 @@ void AnimationNodeBlendSpace1DEditor::edit(const Ref<AnimationNode> &p_node) {
+ 	label_value->set_editable(!read_only);
+ 	min_value->set_editable(!read_only);
+ 	max_value->set_editable(!read_only);
+-	sync->set_disabled(read_only);
++	sync_mode->set_disabled(read_only);
+ 	interpolation->set_disabled(read_only);
+ }
+ 
+@@ -722,9 +728,9 @@ AnimationNodeBlendSpace1DEditor::AnimationNodeBlendSpace1DEditor() {
+ 
+ 	top_hb->add_child(memnew(VSeparator));
+ 	top_hb->add_child(memnew(Label(TTR("Sync:"))));
+-	sync = memnew(CheckBox);
+-	top_hb->add_child(sync);
+-	sync->connect(SceneStringName(toggled), callable_mp(this, &AnimationNodeBlendSpace1DEditor::_config_changed));
++	sync_mode = memnew(OptionButton);
++	top_hb->add_child(sync_mode);
++	sync_mode->connect(SceneStringName(item_selected), callable_mp(this, &AnimationNodeBlendSpace1DEditor::_config_changed));
+ 
+ 	top_hb->add_child(memnew(VSeparator));
+ 
+diff --git forkSrcPrefix/editor/animation/animation_blend_space_1d_editor.h forkDstPrefix/editor/animation/animation_blend_space_1d_editor.h
+index 6b7778d0bc6df19a7b1544d7fd68d58dbd090aed..0c34ec9c548edd26cc5fe38af2f67c8a69fff854 100644
+--- forkSrcPrefix/editor/animation/animation_blend_space_1d_editor.h
++++ forkDstPrefix/editor/animation/animation_blend_space_1d_editor.h
+@@ -62,7 +62,7 @@ class AnimationNodeBlendSpace1DEditor : public AnimationTreeNodeEditorPlugin {
+ 	SpinBox *max_value = nullptr;
+ 	SpinBox *min_value = nullptr;
+ 
+-	CheckBox *sync = nullptr;
++	OptionButton *sync_mode = nullptr;
+ 	OptionButton *interpolation = nullptr;
+ 
+ 	HBoxContainer *edit_hb = nullptr;
+diff --git forkSrcPrefix/editor/animation/animation_blend_space_2d_editor.cpp forkDstPrefix/editor/animation/animation_blend_space_2d_editor.cpp
+index 807188c1dc09bd5cbb87a8e36d02aa532e5cb70e..e083c99eab53c2e5ca0ae37910f063b41ec49587 100644
+--- forkSrcPrefix/editor/animation/animation_blend_space_2d_editor.cpp
++++ forkDstPrefix/editor/animation/animation_blend_space_2d_editor.cpp
+@@ -87,7 +87,7 @@ void AnimationNodeBlendSpace2DEditor::edit(const Ref<AnimationNode> &p_node) {
+ 	edit_y->set_editable(!read_only);
+ 	tool_triangle->set_disabled(read_only);
+ 	auto_triangles->set_disabled(read_only);
+-	sync->set_disabled(read_only);
++	sync_mode->set_disabled(read_only);
+ 	interpolation->set_disabled(read_only);
+ }
+ 
+@@ -658,7 +658,7 @@ void AnimationNodeBlendSpace2DEditor::_update_space() {
+ 
+ 	auto_triangles->set_pressed(blend_space->get_auto_triangles());
+ 
+-	sync->set_pressed(blend_space->is_using_sync());
++	sync_mode->select(blend_space->get_sync_mode());
+ 	interpolation->select(blend_space->get_blend_mode());
+ 
+ 	max_x_value->set_value(blend_space->get_max_space().x);
+@@ -692,8 +692,8 @@ void AnimationNodeBlendSpace2DEditor::_config_changed(double) {
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_min_space", blend_space->get_min_space());
+ 	undo_redo->add_do_method(blend_space.ptr(), "set_snap", Vector2(snap_x->get_value(), snap_y->get_value()));
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_snap", blend_space->get_snap());
+-	undo_redo->add_do_method(blend_space.ptr(), "set_use_sync", sync->is_pressed());
+-	undo_redo->add_undo_method(blend_space.ptr(), "set_use_sync", blend_space->is_using_sync());
++	undo_redo->add_do_method(blend_space.ptr(), "set_sync_mode", sync_mode->get_selected());
++	undo_redo->add_undo_method(blend_space.ptr(), "set_sync_mode", blend_space->get_sync_mode());
+ 	undo_redo->add_do_method(blend_space.ptr(), "set_blend_mode", interpolation->get_selected());
+ 	undo_redo->add_undo_method(blend_space.ptr(), "set_blend_mode", blend_space->get_blend_mode());
+ 	undo_redo->add_do_method(this, "_update_space");
+@@ -823,6 +823,12 @@ void AnimationNodeBlendSpace2DEditor::_notification(int p_what) {
+ 			snap->set_button_icon(get_editor_theme_icon(SNAME("SnapGrid")));
+ 			open_editor->set_button_icon(get_editor_theme_icon(SNAME("Edit")));
+ 			auto_triangles->set_button_icon(get_editor_theme_icon(SNAME("AutoTriangle")));
++
++			sync_mode->clear();
++			sync_mode->add_item(TTR("No Sync"), 0);
++			sync_mode->add_item(TTR("Absolute"), 1);
++			sync_mode->add_item(TTR("Normalized"), 2);
++
+ 			interpolation->clear();
+ 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackContinuous")), TTR("Continuous"), 0);
+ 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackDiscrete")), TTR("Discrete"), 1);
+@@ -976,9 +982,9 @@ AnimationNodeBlendSpace2DEditor::AnimationNodeBlendSpace2DEditor() {
+ 	top_hb->add_child(memnew(VSeparator));
+ 
+ 	top_hb->add_child(memnew(Label(TTR("Sync:"))));
+-	sync = memnew(CheckBox);
+-	top_hb->add_child(sync);
+-	sync->connect(SceneStringName(toggled), callable_mp(this, &AnimationNodeBlendSpace2DEditor::_config_changed));
++	sync_mode = memnew(OptionButton);
++	top_hb->add_child(sync_mode);
++	sync_mode->connect(SceneStringName(item_selected), callable_mp(this, &AnimationNodeBlendSpace2DEditor::_config_changed));
+ 
+ 	top_hb->add_child(memnew(VSeparator));
+ 
+diff --git forkSrcPrefix/editor/animation/animation_blend_space_2d_editor.h forkDstPrefix/editor/animation/animation_blend_space_2d_editor.h
+index 684e7c4524bf1164fcce4a42caae723afc86f6a2..067df34ac3b7933422493e5d3d358ab531acf42d 100644
+--- forkSrcPrefix/editor/animation/animation_blend_space_2d_editor.h
++++ forkDstPrefix/editor/animation/animation_blend_space_2d_editor.h
+@@ -59,7 +59,8 @@ class AnimationNodeBlendSpace2DEditor : public AnimationTreeNodeEditorPlugin {
+ 	Button *snap = nullptr;
+ 	SpinBox *snap_x = nullptr;
+ 	SpinBox *snap_y = nullptr;
+-	CheckBox *sync = nullptr;
++
++	OptionButton *sync_mode = nullptr;
+ 	OptionButton *interpolation = nullptr;
+ 
+ 	Button *auto_triangles = nullptr;
+diff --git forkSrcPrefix/scene/animation/animation_blend_space_1d.cpp forkDstPrefix/scene/animation/animation_blend_space_1d.cpp
+index a57ea2e3fde4ab38e15d40f46c65e97df7f03e85..d6eb761917ae469191aeda80ec7c961e59bf9fa5 100644
+--- forkSrcPrefix/scene/animation/animation_blend_space_1d.cpp
++++ forkDstPrefix/scene/animation/animation_blend_space_1d.cpp
+@@ -31,6 +31,7 @@
+ #include "animation_blend_space_1d.h"
+ 
+ #include "animation_blend_tree.h"
++#include "animation_node_utils.h"
+ 
+ void AnimationNodeBlendSpace1D::get_parameter_list(List<PropertyInfo> *r_list) const {
+ 	AnimationNode::get_parameter_list(r_list);
+@@ -101,8 +102,8 @@ void AnimationNodeBlendSpace1D::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("set_blend_mode", "mode"), &AnimationNodeBlendSpace1D::set_blend_mode);
+ 	ClassDB::bind_method(D_METHOD("get_blend_mode"), &AnimationNodeBlendSpace1D::get_blend_mode);
+ 
+-	ClassDB::bind_method(D_METHOD("set_use_sync", "enable"), &AnimationNodeBlendSpace1D::set_use_sync);
+-	ClassDB::bind_method(D_METHOD("is_using_sync"), &AnimationNodeBlendSpace1D::is_using_sync);
++	ClassDB::bind_method(D_METHOD("set_sync_mode", "mode"), &AnimationNodeBlendSpace1D::set_sync_mode);
++	ClassDB::bind_method(D_METHOD("get_sync_mode"), &AnimationNodeBlendSpace1D::get_sync_mode);
+ 
+ 	ClassDB::bind_method(D_METHOD("_add_blend_point", "index", "node"), &AnimationNodeBlendSpace1D::_add_blend_point);
+ 
+@@ -116,11 +117,16 @@ void AnimationNodeBlendSpace1D::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "snap", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_snap", "get_snap");
+ 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "value_label", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_value_label", "get_value_label");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "blend_mode", PROPERTY_HINT_ENUM, "Interpolated,Discrete,Carry", PROPERTY_USAGE_NO_EDITOR), "set_blend_mode", "get_blend_mode");
+-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sync", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_use_sync", "is_using_sync");
++
++	ADD_PROPERTY(PropertyInfo(Variant::INT, "sync_mode", PROPERTY_HINT_ENUM, "None,Absolute,Normalized", PROPERTY_USAGE_NO_EDITOR), "set_sync_mode", "get_sync_mode");
+ 
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_INTERPOLATED);
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_DISCRETE);
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_DISCRETE_CARRY);
++
++	BIND_ENUM_CONSTANT(SYNC_MODE_NONE);
++	BIND_ENUM_CONSTANT(SYNC_MODE_ABSOLUTE);
++	BIND_ENUM_CONSTANT(SYNC_MODE_NORMALIZED);
+ }
+ 
+ void AnimationNodeBlendSpace1D::get_child_nodes(List<ChildNode> *r_child_nodes) {
+@@ -155,12 +161,16 @@ void AnimationNodeBlendSpace1D::add_blend_point(const Ref<AnimationRootNode> &p_
+ 
+ 	blend_points_used++;
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ void AnimationNodeBlendSpace1D::set_blend_point_position(int p_point, float p_position) {
+ 	ERR_FAIL_INDEX(p_point, blend_points_used);
+ 
+ 	blend_points[p_point].position = p_position;
++
++	pending_resync = true;
+ }
+ 
+ void AnimationNodeBlendSpace1D::set_blend_point_node(int p_point, const Ref<AnimationRootNode> &p_node) {
+@@ -179,6 +189,8 @@ void AnimationNodeBlendSpace1D::set_blend_point_node(int p_point, const Ref<Anim
+ 	blend_points[p_point].node->connect("animation_node_removed", callable_mp(this, &AnimationNodeBlendSpace1D::_animation_node_removed), CONNECT_REFERENCE_COUNTED);
+ 
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ float AnimationNodeBlendSpace1D::get_blend_point_position(int p_point) const {
+@@ -207,6 +219,8 @@ void AnimationNodeBlendSpace1D::remove_blend_point(int p_point) {
+ 
+ 	emit_signal(SNAME("animation_node_removed"), get_instance_id(), itos(p_point));
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ int AnimationNodeBlendSpace1D::get_blend_point_count() const {
+@@ -261,12 +275,13 @@ AnimationNodeBlendSpace1D::BlendMode AnimationNodeBlendSpace1D::get_blend_mode()
+ 	return blend_mode;
+ }
+ 
+-void AnimationNodeBlendSpace1D::set_use_sync(bool p_sync) {
+-	sync = p_sync;
++void AnimationNodeBlendSpace1D::set_sync_mode(SyncMode p_mode) {
++	sync_mode = p_mode;
++	pending_resync = true;
+ }
+ 
+-bool AnimationNodeBlendSpace1D::is_using_sync() const {
+-	return sync;
++AnimationNodeBlendSpace1D::SyncMode AnimationNodeBlendSpace1D::get_sync_mode() const {
++	return sync_mode;
+ }
+ 
+ void AnimationNodeBlendSpace1D::_add_blend_point(int p_index, const Ref<AnimationRootNode> &p_node) {
+@@ -277,6 +292,22 @@ void AnimationNodeBlendSpace1D::_add_blend_point(int p_index, const Ref<Animatio
+ 	}
+ }
+ 
++double _blend_space_1d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer) {
++	AnimationNodeBlendSpace1D *self = static_cast<AnimationNodeBlendSpace1D *>(p_userdata);
++	return AnimationNodeUtils::get_node_length(self->blend_points[p_index].node, p_mixer);
++}
++
++AnimationNode::NodeTimeInfo _blend_space_1d_peek(
++		void *p_userdata,
++		int p_index,
++		const AnimationMixer::PlaybackInfo &p_pi) {
++
++	AnimationNodeBlendSpace1D *self = static_cast<AnimationNodeBlendSpace1D *>(p_userdata);
++	AnimationNodeBlendSpace1D::BlendPoint &bp = self->blend_points[p_index];
++
++	return self->blend_node(bp.node, bp.name, p_pi, AnimationNode::FILTER_IGNORE, true, true);
++}
++
+ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(const AnimationMixer::PlaybackInfo p_playback_info, bool p_test_only) {
+ 	if (!blend_points_used) {
+ 		return NodeTimeInfo();
+@@ -285,7 +316,6 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(const AnimationM
+ 	AnimationMixer::PlaybackInfo pi = p_playback_info;
+ 
+ 	if (blend_points_used == 1) {
+-		// only one point available, just play that animation
+ 		pi.weight = 1.0;
+ 		return blend_node(blend_points[0].node, blend_points[0].name, pi, FILTER_IGNORE, true, p_test_only);
+ 	}
+@@ -294,79 +324,49 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(const AnimationM
+ 	int cur_closest = get_parameter(closest);
+ 	NodeTimeInfo mind;
+ 
++	float weights[MAX_BLEND_POINTS] = {};
++	int master_idx = -1;
++	float max_weight = -1.0f;
++
++	// --- Weights ---
+ 	if (blend_mode == BLEND_MODE_INTERPOLATED) {
+ 		int point_lower = -1;
+-		float pos_lower = 0.0;
++		float pos_lower = 0.0f;
+ 		int point_higher = -1;
+-		float pos_higher = 0.0;
++		float pos_higher = 0.0f;
+ 
+-		// find the closest two points to blend between
+ 		for (int i = 0; i < blend_points_used; i++) {
+ 			float pos = blend_points[i].position;
+-
+ 			if (pos <= blend_pos) {
+ 				if (point_lower == -1 || pos > pos_lower) {
+ 					point_lower = i;
+ 					pos_lower = pos;
+ 				}
+-			} else if (point_higher == -1 || pos < pos_higher) {
+-				point_higher = i;
+-				pos_higher = pos;
++			} else {
++				if (point_higher == -1 || pos < pos_higher) {
++					point_higher = i;
++					pos_higher = pos;
++				}
+ 			}
+ 		}
+ 
+-		// fill in weights
+-		float weights[MAX_BLEND_POINTS] = {};
+ 		if (point_lower == -1 && point_higher != -1) {
+-			// we are on the left side, no other point to the left
+-			// we just play the next point.
+-
+-			weights[point_higher] = 1.0;
++			weights[point_higher] = 1.0f;
+ 		} else if (point_higher == -1) {
+-			// we are on the right side, no other point to the right
+-			// we just play the previous point
+-
+-			weights[point_lower] = 1.0;
++			weights[point_lower] = 1.0f;
+ 		} else {
+-			// we are between two points.
+-			// figure out weights, then blend the animations
+-
+-			float distance_between_points = pos_higher - pos_lower;
+-
+-			float current_pos_inbetween = blend_pos - pos_lower;
+-
+-			float blend_percentage = current_pos_inbetween / distance_between_points;
+-
+-			float blend_lower = 1.0 - blend_percentage;
+-			float blend_higher = blend_percentage;
+-
+-			weights[point_lower] = blend_lower;
+-			weights[point_higher] = blend_higher;
+-		}
+-
+-		// actually blend the animations now
+-		bool first = true;
+-		double max_weight = 0.0;
+-		for (int i = 0; i < blend_points_used; i++) {
+-			if (i == point_lower || i == point_higher) {
+-				pi.weight = weights[i];
+-				NodeTimeInfo t = blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-				if (first || pi.weight > max_weight) {
+-					max_weight = pi.weight;
+-					mind = t;
+-					first = false;
+-				}
+-			} else if (sync) {
+-				pi.weight = 0;
+-				blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-			}
++			float dist = pos_higher - pos_lower;
++			float ratio = (blend_pos - pos_lower) / dist;
++			weights[point_lower] = 1.0f - ratio;
++			weights[point_higher] = ratio;
+ 		}
+ 	} else {
+-		int new_closest = -1;
++		// Discrete / carry logic.
+ 		double new_closest_dist = 1e20;
++		int new_closest = -1;
+ 
+ 		for (int i = 0; i < blend_points_used; i++) {
+-			double d = std::abs(blend_points[i].position - blend_pos);
++			double d = Math::abs(blend_points[i].position - blend_pos);
+ 			if (d < new_closest_dist) {
+ 				new_closest = i;
+ 				new_closest_dist = d;
+@@ -375,42 +375,101 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(const AnimationM
+ 
+ 		if (new_closest != cur_closest && new_closest != -1) {
+ 			if (blend_mode == BLEND_MODE_DISCRETE_CARRY && cur_closest != -1) {
+-				NodeTimeInfo from;
+-				// For ping-pong loop.
+ 				Ref<AnimationNodeAnimation> na_c = static_cast<Ref<AnimationNodeAnimation>>(blend_points[cur_closest].node);
+ 				Ref<AnimationNodeAnimation> na_n = static_cast<Ref<AnimationNodeAnimation>>(blend_points[new_closest].node);
+ 				if (na_c.is_valid() && na_n.is_valid()) {
+ 					na_n->process_state = process_state;
+ 					na_c->process_state = process_state;
+-
+ 					na_n->set_backward(na_c->is_backward());
+-
+ 					na_n = nullptr;
+ 					na_c = nullptr;
+ 				}
+-				// See how much animation remains.
+-				pi.seeked = false;
+-				pi.weight = 0;
+-				from = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi, FILTER_IGNORE, true, true);
++
++				AnimationMixer::PlaybackInfo pi_carry = pi;
++				pi_carry.seeked = false;
++				pi_carry.weight = 0.0;
++
++				NodeTimeInfo from = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi_carry, FILTER_IGNORE, true, true);
+ 				pi.time = from.position;
+ 			}
++
+ 			pi.seeked = true;
+-			pi.weight = 1.0;
+-			mind = blend_node(blend_points[new_closest].node, blend_points[new_closest].name, pi, FILTER_IGNORE, true, p_test_only);
+ 			cur_closest = new_closest;
+-		} else {
+-			pi.weight = 1.0;
+-			mind = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi, FILTER_IGNORE, true, p_test_only);
+ 		}
+ 
+-		if (sync) {
+-			pi = p_playback_info;
+-			pi.weight = 0;
+-			for (int i = 0; i < blend_points_used; i++) {
+-				if (i != cur_closest) {
+-					blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-				}
++		if (new_closest != -1) {
++			weights[new_closest] = 1.0f;
++		}
++	}
++
++	// Master index (largest weight).
++	for (int i = 0; i < blend_points_used; i++) {
++		if (weights[i] > max_weight) {
++			max_weight = weights[i];
++			master_idx = i;
++		}
++	}
++
++	// --- Sync mode flags and mode-change detection ---
++	const bool sync_none = (sync_mode == SYNC_MODE_NONE);
++	const bool sync_abs = (sync_mode == SYNC_MODE_ABSOLUTE);
++	const bool sync_norm = (sync_mode == SYNC_MODE_NORMALIZED);
++
++	bool mode_changed_this_frame = false;
++	if (pending_resync) {
++		mode_changed_this_frame = true;
++		pending_resync = false;
++	}
++
++	AnimationMixer *mixer = process_state ? process_state->tree : nullptr;
++
++	// Normalized sync state (only meaningful if sync_norm).
++	AnimationNodeUtils::NormalizedSyncState norm_state = AnimationNodeUtils::prepare_normalized_sync_state(
++		sync_norm,                // p_is_normalized
++		mode_changed_this_frame,  // p_force_resync
++		weights,
++		blend_points_used,
++		master_idx,
++		process_state,
++		pi,
++		this,
++		_blend_space_1d_get_length,
++		_blend_space_1d_peek
++	);
++
++	// --- Execution ---
++	for (int i = 0; i < blend_points_used; i++) {
++		double w = weights[i];
++		const bool is_active = (w > CMP_EPSILON);
++
++		if (!is_active && sync_none) {
++			// In NONE mode, completely skip zero-weight clips.
++			continue;
++		}
++
++		AnimationMixer::PlaybackInfo pi_child = pi;
++		pi_child.weight = w;
++
++		if (sync_norm && norm_state.enabled) {
++			const double child_len = _blend_space_1d_get_length(this, i, mixer);
++			AnimationNodeUtils::apply_normalized_sync_to_child(norm_state, pi_child, pi, child_len);
++		} else if (sync_abs) {
++			// SYNC_MODE_ABSOLUTE:
++			// - On mode change, snap all children to the current absolute time once.
++			// - On later external seeks, propagate that absolute time as well.
++			if (mode_changed_this_frame || pi.seeked) {
++				pi_child.seeked = true;
++				pi_child.time = pi.time;
+ 			}
++		} else {
++			// SYNC_MODE_NONE
++		}
++
++		NodeTimeInfo t = blend_node(blend_points[i].node, blend_points[i].name, pi_child, FILTER_IGNORE, true, p_test_only);
++		if (i == master_idx) {
++			mind = t;
++		} else if (mind.length == 0.0) {
++			mind = t;
+ 		}
+ 	}
+ 
+@@ -426,6 +485,9 @@ AnimationNodeBlendSpace1D::AnimationNodeBlendSpace1D() {
+ 	for (int i = 0; i < MAX_BLEND_POINTS; i++) {
+ 		blend_points[i].name = itos(i);
+ 	}
++
++	last_sync_mode = sync_mode;
++	pending_resync = false;
+ }
+ 
+ AnimationNodeBlendSpace1D::~AnimationNodeBlendSpace1D() {
+diff --git forkSrcPrefix/scene/animation/animation_blend_space_1d.h forkDstPrefix/scene/animation/animation_blend_space_1d.h
+index 0bd29cd97e9ff37d75d8dc70fe88ecb67c999d9f..eaf27128886cab09d11342a7c0902da6ce99b987 100644
+--- forkSrcPrefix/scene/animation/animation_blend_space_1d.h
++++ forkDstPrefix/scene/animation/animation_blend_space_1d.h
+@@ -42,6 +42,12 @@ public:
+ 		BLEND_MODE_DISCRETE_CARRY,
+ 	};
+ 
++	enum SyncMode {
++		SYNC_MODE_NONE,
++		SYNC_MODE_ABSOLUTE,
++		SYNC_MODE_NORMALIZED
++	};
++
+ protected:
+ 	enum {
+ 		MAX_BLEND_POINTS = 64
+@@ -70,7 +76,12 @@ protected:
+ 
+ 	BlendMode blend_mode = BLEND_MODE_INTERPOLATED;
+ 
+-	bool sync = false;
++	SyncMode sync_mode = SYNC_MODE_NORMALIZED;
++	SyncMode last_sync_mode = SYNC_MODE_NORMALIZED;
++	bool pending_resync = false;
++
++	friend double _blend_space_1d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer);
++	friend AnimationNode::NodeTimeInfo _blend_space_1d_peek(void *p_userdata, int p_index, const AnimationMixer::PlaybackInfo &p_pi);
+ 
+ 	void _validate_property(PropertyInfo &p_property) const;
+ 	static void _bind_methods();
+@@ -109,8 +120,8 @@ public:
+ 	void set_blend_mode(BlendMode p_blend_mode);
+ 	BlendMode get_blend_mode() const;
+ 
+-	void set_use_sync(bool p_sync);
+-	bool is_using_sync() const;
++	void set_sync_mode(SyncMode p_mode);
++	SyncMode get_sync_mode() const;
+ 
+ 	virtual NodeTimeInfo _process(const AnimationMixer::PlaybackInfo p_playback_info, bool p_test_only = false) override;
+ 	String get_caption() const override;
+@@ -122,3 +133,4 @@ public:
+ };
+ 
+ VARIANT_ENUM_CAST(AnimationNodeBlendSpace1D::BlendMode)
++VARIANT_ENUM_CAST(AnimationNodeBlendSpace1D::SyncMode)
+diff --git forkSrcPrefix/scene/animation/animation_blend_space_2d.cpp forkDstPrefix/scene/animation/animation_blend_space_2d.cpp
+index 62ba7edd4e0c3395ed67f5386422688606041009..e6f4767a33578245de8cff670d6fd9ba22a81d5a 100644
+--- forkSrcPrefix/scene/animation/animation_blend_space_2d.cpp
++++ forkDstPrefix/scene/animation/animation_blend_space_2d.cpp
+@@ -31,6 +31,7 @@
+ #include "animation_blend_space_2d.h"
+ 
+ #include "animation_blend_tree.h"
++#include "animation_node_utils.h"
+ #include "core/math/geometry_2d.h"
+ #include "scene/resources/material.h"
+ 
+@@ -92,12 +93,16 @@ void AnimationNodeBlendSpace2D::add_blend_point(const Ref<AnimationRootNode> &p_
+ 	_queue_auto_triangles();
+ 
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ void AnimationNodeBlendSpace2D::set_blend_point_position(int p_point, const Vector2 &p_position) {
+ 	ERR_FAIL_INDEX(p_point, blend_points_used);
+ 	blend_points[p_point].position = p_position;
+ 	_queue_auto_triangles();
++
++	pending_resync = true;
+ }
+ 
+ void AnimationNodeBlendSpace2D::set_blend_point_node(int p_point, const Ref<AnimationRootNode> &p_node) {
+@@ -115,6 +120,8 @@ void AnimationNodeBlendSpace2D::set_blend_point_node(int p_point, const Ref<Anim
+ 	blend_points[p_point].node->connect("animation_node_removed", callable_mp(this, &AnimationNodeBlendSpace2D::_animation_node_removed), CONNECT_REFERENCE_COUNTED);
+ 
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ Vector2 AnimationNodeBlendSpace2D::get_blend_point_position(int p_point) const {
+@@ -159,6 +166,8 @@ void AnimationNodeBlendSpace2D::remove_blend_point(int p_point) {
+ 
+ 	emit_signal(SNAME("animation_node_removed"), get_instance_id(), itos(p_point));
+ 	emit_signal(SNAME("tree_changed"));
++
++	pending_resync = true;
+ }
+ 
+ int AnimationNodeBlendSpace2D::get_blend_point_count() const {
+@@ -303,6 +312,8 @@ void AnimationNodeBlendSpace2D::_add_blend_point(int p_index, const Ref<Animatio
+ 	} else {
+ 		set_blend_point_node(p_index, p_node);
+ 	}
++
++	pending_resync = true;
+ }
+ 
+ void AnimationNodeBlendSpace2D::_set_triangles(const Vector<int> &p_triangles) {
+@@ -444,154 +455,6 @@ void AnimationNodeBlendSpace2D::_blend_triangle(const Vector2 &p_pos, const Vect
+ 	r_weights[2] = w;
+ }
+ 
+-AnimationNode::NodeTimeInfo AnimationNodeBlendSpace2D::_process(const AnimationMixer::PlaybackInfo p_playback_info, bool p_test_only) {
+-	_update_triangles();
+-
+-	if (!blend_points_used) {
+-		return NodeTimeInfo();
+-	}
+-
+-	Vector2 blend_pos = get_parameter(blend_position);
+-	int cur_closest = get_parameter(closest);
+-	NodeTimeInfo mind; //time of min distance point
+-
+-	AnimationMixer::PlaybackInfo pi = p_playback_info;
+-
+-	if (blend_mode == BLEND_MODE_INTERPOLATED) {
+-		if (triangles.is_empty()) {
+-			return NodeTimeInfo();
+-		}
+-
+-		Vector2 best_point;
+-		bool first = true;
+-		int blend_triangle = -1;
+-		float blend_weights[3] = { 0, 0, 0 };
+-
+-		for (int i = 0; i < triangles.size(); i++) {
+-			Vector2 points[3];
+-			for (int j = 0; j < 3; j++) {
+-				points[j] = get_blend_point_position(get_triangle_point(i, j));
+-			}
+-
+-			if (Geometry2D::is_point_in_triangle(blend_pos, points[0], points[1], points[2])) {
+-				blend_triangle = i;
+-				_blend_triangle(blend_pos, points, blend_weights);
+-				break;
+-			}
+-
+-			for (int j = 0; j < 3; j++) {
+-				const Vector2 segment_a = points[j];
+-				const Vector2 segment_b = points[(j + 1) % 3];
+-				Vector2 closest2 = Geometry2D::get_closest_point_to_segment(blend_pos, segment_a, segment_b);
+-				if (first || closest2.distance_to(blend_pos) < best_point.distance_to(blend_pos)) {
+-					best_point = closest2;
+-					blend_triangle = i;
+-					first = false;
+-					const real_t d = segment_a.distance_to(segment_b);
+-					if (d == 0.0) {
+-						blend_weights[j] = 1.0;
+-						blend_weights[(j + 1) % 3] = 0.0;
+-						blend_weights[(j + 2) % 3] = 0.0;
+-					} else {
+-						const real_t c = segment_a.distance_to(closest2) / d;
+-
+-						blend_weights[j] = 1.0 - c;
+-						blend_weights[(j + 1) % 3] = c;
+-						blend_weights[(j + 2) % 3] = 0.0;
+-					}
+-				}
+-			}
+-		}
+-
+-		ERR_FAIL_COND_V(blend_triangle == -1, NodeTimeInfo()); //should never reach here
+-
+-		int triangle_points[3];
+-		for (int j = 0; j < 3; j++) {
+-			triangle_points[j] = get_triangle_point(blend_triangle, j);
+-		}
+-
+-		first = true;
+-
+-		double max_weight = 0.0;
+-		for (int i = 0; i < blend_points_used; i++) {
+-			bool found = false;
+-			for (int j = 0; j < 3; j++) {
+-				if (i == triangle_points[j]) {
+-					//blend with the given weight
+-					pi.weight = blend_weights[j];
+-					NodeTimeInfo t = blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-					if (first || pi.weight > max_weight) {
+-						mind = t;
+-						max_weight = pi.weight;
+-						first = false;
+-					}
+-					found = true;
+-					break;
+-				}
+-			}
+-
+-			if (sync && !found) {
+-				pi.weight = 0;
+-				blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-			}
+-		}
+-	} else {
+-		int new_closest = -1;
+-		float new_closest_dist = 1e20;
+-
+-		for (int i = 0; i < blend_points_used; i++) {
+-			float d = blend_points[i].position.distance_squared_to(blend_pos);
+-			if (d < new_closest_dist) {
+-				new_closest = i;
+-				new_closest_dist = d;
+-			}
+-		}
+-
+-		if (new_closest != cur_closest && new_closest != -1) {
+-			if (blend_mode == BLEND_MODE_DISCRETE_CARRY && cur_closest != -1) {
+-				NodeTimeInfo from;
+-				// For ping-pong loop.
+-				Ref<AnimationNodeAnimation> na_c = static_cast<Ref<AnimationNodeAnimation>>(blend_points[cur_closest].node);
+-				Ref<AnimationNodeAnimation> na_n = static_cast<Ref<AnimationNodeAnimation>>(blend_points[new_closest].node);
+-				if (na_c.is_valid() && na_n.is_valid()) {
+-					na_n->process_state = process_state;
+-					na_c->process_state = process_state;
+-
+-					na_n->set_backward(na_c->is_backward());
+-
+-					na_n = nullptr;
+-					na_c = nullptr;
+-				}
+-				// See how much animation remains.
+-				pi.seeked = false;
+-				pi.weight = 0;
+-				from = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi, FILTER_IGNORE, true, true);
+-				pi.time = from.position;
+-			}
+-			pi.seeked = true;
+-			pi.weight = 1.0;
+-			mind = blend_node(blend_points[new_closest].node, blend_points[new_closest].name, pi, FILTER_IGNORE, true, p_test_only);
+-			cur_closest = new_closest;
+-		} else {
+-			pi.weight = 1.0;
+-			mind = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi, FILTER_IGNORE, true, p_test_only);
+-		}
+-
+-		if (sync) {
+-			pi = p_playback_info;
+-			pi.weight = 0;
+-			for (int i = 0; i < blend_points_used; i++) {
+-				if (i != cur_closest) {
+-					blend_node(blend_points[i].node, blend_points[i].name, pi, FILTER_IGNORE, true, p_test_only);
+-				}
+-			}
+-		}
+-	}
+-
+-	set_parameter(closest, cur_closest);
+-	return mind;
+-}
+-
+ String AnimationNodeBlendSpace2D::get_caption() const {
+ 	return "BlendSpace2D";
+ }
+@@ -634,12 +497,13 @@ AnimationNodeBlendSpace2D::BlendMode AnimationNodeBlendSpace2D::get_blend_mode()
+ 	return blend_mode;
+ }
+ 
+-void AnimationNodeBlendSpace2D::set_use_sync(bool p_sync) {
+-	sync = p_sync;
++void AnimationNodeBlendSpace2D::set_sync_mode(SyncMode p_mode) {
++	sync_mode = p_mode;
++	pending_resync = true;
+ }
+ 
+-bool AnimationNodeBlendSpace2D::is_using_sync() const {
+-	return sync;
++AnimationNodeBlendSpace2D::SyncMode AnimationNodeBlendSpace2D::get_sync_mode() const {
++	return sync_mode;
+ }
+ 
+ void AnimationNodeBlendSpace2D::_tree_changed() {
+@@ -694,8 +558,8 @@ void AnimationNodeBlendSpace2D::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("set_blend_mode", "mode"), &AnimationNodeBlendSpace2D::set_blend_mode);
+ 	ClassDB::bind_method(D_METHOD("get_blend_mode"), &AnimationNodeBlendSpace2D::get_blend_mode);
+ 
+-	ClassDB::bind_method(D_METHOD("set_use_sync", "enable"), &AnimationNodeBlendSpace2D::set_use_sync);
+-	ClassDB::bind_method(D_METHOD("is_using_sync"), &AnimationNodeBlendSpace2D::is_using_sync);
++	ClassDB::bind_method(D_METHOD("set_sync_mode", "mode"), &AnimationNodeBlendSpace2D::set_sync_mode);
++	ClassDB::bind_method(D_METHOD("get_sync_mode"), &AnimationNodeBlendSpace2D::get_sync_mode);
+ 
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_triangles", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_auto_triangles", "get_auto_triangles");
+ 
+@@ -712,18 +576,223 @@ void AnimationNodeBlendSpace2D::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "x_label", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_x_label", "get_x_label");
+ 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "y_label", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_y_label", "get_y_label");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "blend_mode", PROPERTY_HINT_ENUM, "Interpolated,Discrete,Carry", PROPERTY_USAGE_NO_EDITOR), "set_blend_mode", "get_blend_mode");
+-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sync", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_use_sync", "is_using_sync");
+ 
+ 	ADD_SIGNAL(MethodInfo("triangles_updated"));
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_INTERPOLATED);
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_DISCRETE);
+ 	BIND_ENUM_CONSTANT(BLEND_MODE_DISCRETE_CARRY);
++
++	BIND_ENUM_CONSTANT(SYNC_MODE_NONE);
++	BIND_ENUM_CONSTANT(SYNC_MODE_ABSOLUTE);
++	BIND_ENUM_CONSTANT(SYNC_MODE_NORMALIZED);
++}
++
++double _blend_space_2d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer) {
++	AnimationNodeBlendSpace2D *self = static_cast<AnimationNodeBlendSpace2D *>(p_userdata);
++	return AnimationNodeUtils::get_node_length(self->blend_points[p_index].node, p_mixer);
++}
++
++AnimationNode::NodeTimeInfo _blend_space_2d_peek(
++		void *p_userdata,
++		int p_index,
++		const AnimationMixer::PlaybackInfo &p_pi) {
++
++	AnimationNodeBlendSpace2D *self = static_cast<AnimationNodeBlendSpace2D *>(p_userdata);
++	AnimationNodeBlendSpace2D::BlendPoint &bp = self->blend_points[p_index];
++
++	return self->blend_node(bp.node, bp.name, p_pi, AnimationNode::FILTER_IGNORE, true, true);
++}
++
++AnimationNode::NodeTimeInfo AnimationNodeBlendSpace2D::_process(const AnimationMixer::PlaybackInfo p_playback_info, bool p_test_only) {
++	_update_triangles();
++	if (!blend_points_used) {
++		return NodeTimeInfo();
++	}
++
++	Vector2 blend_pos = get_parameter(blend_position);
++	int cur_closest = get_parameter(closest);
++	NodeTimeInfo mind;
++	AnimationMixer::PlaybackInfo pi = p_playback_info;
++
++	float weights[MAX_BLEND_POINTS] = {};
++	int master_idx = -1;
++	float max_weight = -1.0f;
++
++	// --- Weights (triangle / discrete) ---
++	if (blend_mode == BLEND_MODE_INTERPOLATED) {
++		if (triangles.is_empty()) {
++			return NodeTimeInfo();
++		}
++
++		Vector2 best_point;
++		bool first = true;
++		int blend_triangle = -1;
++		float triangle_weights[3] = { 0.0f, 0.0f, 0.0f };
++
++		for (int i = 0; i < triangles.size(); i++) {
++			Vector2 points[3];
++			for (int j = 0; j < 3; j++) {
++				points[j] = get_blend_point_position(get_triangle_point(i, j));
++			}
++
++			if (Geometry2D::is_point_in_triangle(blend_pos, points[0], points[1], points[2])) {
++				blend_triangle = i;
++				_blend_triangle(blend_pos, points, triangle_weights);
++				break;
++			}
++
++			for (int j = 0; j < 3; j++) {
++				const Vector2 segment_a = points[j];
++				const Vector2 segment_b = points[(j + 1) % 3];
++				Vector2 closest2 = Geometry2D::get_closest_point_to_segment(blend_pos, segment_a, segment_b);
++
++				if (first || closest2.distance_to(blend_pos) < best_point.distance_to(blend_pos)) {
++					first = false;
++					best_point = closest2;
++					blend_triangle = i;
++
++					const real_t d = segment_a.distance_to(segment_b);
++					if (d == 0.0) {
++						triangle_weights[j] = 1.0f;
++						triangle_weights[(j + 1) % 3] = 0.0f;
++						triangle_weights[(j + 2) % 3] = 0.0f;
++					} else {
++						const real_t c = segment_a.distance_to(closest2) / d;
++						triangle_weights[j] = 1.0f - c;
++						triangle_weights[(j + 1) % 3] = c;
++						triangle_weights[(j + 2) % 3] = 0.0f;
++					}
++				}
++			}
++		}
++
++		if (blend_triangle != -1) {
++			for (int j = 0; j < 3; j++) {
++				weights[get_triangle_point(blend_triangle, j)] = triangle_weights[j];
++			}
++		}
++	} else {
++		// Discrete logic.
++		int new_closest = -1;
++		float new_closest_dist = 1e20f;
++
++		for (int i = 0; i < blend_points_used; i++) {
++			double d = blend_points[i].position.distance_squared_to(blend_pos);
++			if (d < new_closest_dist) {
++				new_closest = i;
++				new_closest_dist = d;
++			}
++		}
++
++		if (new_closest != cur_closest && new_closest != -1) {
++			if (blend_mode == BLEND_MODE_DISCRETE_CARRY && cur_closest != -1) {
++				Ref<AnimationNodeAnimation> na_c = static_cast<Ref<AnimationNodeAnimation>>(blend_points[cur_closest].node);
++				Ref<AnimationNodeAnimation> na_n = static_cast<Ref<AnimationNodeAnimation>>(blend_points[new_closest].node);
++				if (na_c.is_valid() && na_n.is_valid()) {
++					na_n->process_state = process_state;
++					na_c->process_state = process_state;
++					na_n->set_backward(na_c->is_backward());
++					na_n = nullptr;
++					na_c = nullptr;
++				}
++
++				AnimationMixer::PlaybackInfo pi_carry = pi;
++				pi_carry.seeked = false;
++				pi_carry.weight = 0.0;
++
++				NodeTimeInfo from = blend_node(blend_points[cur_closest].node, blend_points[cur_closest].name, pi_carry, FILTER_IGNORE, true, true);
++				pi.time = from.position;
++			}
++
++			pi.seeked = true;
++			cur_closest = new_closest;
++		}
++
++		if (new_closest != -1) {
++			weights[new_closest] = 1.0f;
++		}
++	}
++
++	// Master index.
++	for (int i = 0; i < blend_points_used; i++) {
++		if (weights[i] > max_weight) {
++			max_weight = weights[i];
++			master_idx = i;
++		}
++	}
++
++	// --- Sync mode flags and mode-change detection ---
++	const bool sync_none = (sync_mode == SYNC_MODE_NONE);
++	const bool sync_abs = (sync_mode == SYNC_MODE_ABSOLUTE);
++	const bool sync_norm = (sync_mode == SYNC_MODE_NORMALIZED);
++
++	bool mode_changed_this_frame = false;
++	if (pending_resync) {
++		mode_changed_this_frame = true;
++		pending_resync = false;
++	}
++
++	AnimationMixer *mixer = process_state ? process_state->tree : nullptr;
++
++	AnimationNodeUtils::NormalizedSyncState norm_state = AnimationNodeUtils::prepare_normalized_sync_state(
++		sync_norm,
++		mode_changed_this_frame,
++		weights,
++		blend_points_used,
++		master_idx,
++		process_state,
++		pi,
++		this,
++		_blend_space_2d_get_length,
++		_blend_space_2d_peek
++	);
++
++	// --- Execution ---
++	for (int i = 0; i < blend_points_used; i++) {
++		double w = weights[i];
++		const bool is_active = (w > CMP_EPSILON);
++
++		if (!is_active && sync_none) {
++			continue;
++		}
++
++		AnimationMixer::PlaybackInfo pi_child = pi;
++		pi_child.weight = w;
++
++		if (sync_norm && norm_state.enabled) {
++			const double child_len = _blend_space_2d_get_length(this, i, mixer);
++			AnimationNodeUtils::apply_normalized_sync_to_child(norm_state, pi_child, pi, child_len);
++		} else if (sync_abs) {
++			// SYNC_MODE_ABSOLUTE:
++			// - On mode change, snap all children to the current absolute time once.
++			// - On later external seeks, propagate that absolute time as well.
++			if (mode_changed_this_frame || pi.seeked) {
++				pi_child.seeked = true;
++				pi_child.time = pi.time;
++			}
++		} else {
++			// SYNC_MODE_NONE
++		}
++
++		NodeTimeInfo t = blend_node(blend_points[i].node, blend_points[i].name, pi_child, FILTER_IGNORE, true, p_test_only);
++		if (i == master_idx) {
++			mind = t;
++		} else if (mind.length == 0.0) {
++			mind = t;
++		}
++	}
++
++	set_parameter(closest, cur_closest);
++	return mind;
+ }
+ 
+ AnimationNodeBlendSpace2D::AnimationNodeBlendSpace2D() {
+ 	for (int i = 0; i < MAX_BLEND_POINTS; i++) {
+ 		blend_points[i].name = itos(i);
+ 	}
++
++	last_sync_mode = sync_mode;
++	pending_resync = false;
+ }
+ 
+ AnimationNodeBlendSpace2D::~AnimationNodeBlendSpace2D() {
+diff --git forkSrcPrefix/scene/animation/animation_blend_space_2d.h forkDstPrefix/scene/animation/animation_blend_space_2d.h
+index 4c4791c26015d61fb13c3424fcd5cbc3cdc83183..bf760c1afa60e9c8735cbee82a2d7f5786526def 100644
+--- forkSrcPrefix/scene/animation/animation_blend_space_2d.h
++++ forkDstPrefix/scene/animation/animation_blend_space_2d.h
+@@ -42,6 +42,12 @@ public:
+ 		BLEND_MODE_DISCRETE_CARRY,
+ 	};
+ 
++	enum SyncMode {
++		SYNC_MODE_NONE,
++		SYNC_MODE_ABSOLUTE,
++		SYNC_MODE_NORMALIZED
++	};
++
+ protected:
+ 	enum {
+ 		MAX_BLEND_POINTS = 64
+@@ -69,8 +75,16 @@ protected:
+ 	Vector2 snap = Vector2(0.1, 0.1);
+ 	String x_label = "x";
+ 	String y_label = "y";
++
+ 	BlendMode blend_mode = BLEND_MODE_INTERPOLATED;
+ 
++	SyncMode sync_mode = SYNC_MODE_NORMALIZED;
++	SyncMode last_sync_mode = SYNC_MODE_NORMALIZED;
++	bool pending_resync = false;
++
++	friend double _blend_space_2d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer);
++	friend AnimationNode::NodeTimeInfo _blend_space_2d_peek(void *p_userdata, int p_index, const AnimationMixer::PlaybackInfo &p_pi);
++
+ 	void _add_blend_point(int p_index, const Ref<AnimationRootNode> &p_node);
+ 	void _set_triangles(const Vector<int> &p_triangles);
+ 	Vector<int> _get_triangles() const;
+@@ -83,8 +97,6 @@ protected:
+ 	void _update_triangles();
+ 	void _queue_auto_triangles();
+ 
+-	bool sync = false;
+-
+ 	void _validate_property(PropertyInfo &p_property) const;
+ 	static void _bind_methods();
+ 
+@@ -138,8 +150,8 @@ public:
+ 	void set_blend_mode(BlendMode p_blend_mode);
+ 	BlendMode get_blend_mode() const;
+ 
+-	void set_use_sync(bool p_sync);
+-	bool is_using_sync() const;
++	void set_sync_mode(SyncMode p_mode);
++	SyncMode get_sync_mode() const;
+ 
+ 	virtual Ref<AnimationNode> get_child_by_name(const StringName &p_name) const override;
+ 
+@@ -148,3 +160,4 @@ public:
+ };
+ 
+ VARIANT_ENUM_CAST(AnimationNodeBlendSpace2D::BlendMode)
++VARIANT_ENUM_CAST(AnimationNodeBlendSpace2D::SyncMode)
+diff --git forkSrcPrefix/scene/animation/animation_node_utils.cpp forkDstPrefix/scene/animation/animation_node_utils.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..565ea52d24e1d60ac047b4d689d9323990710af4
+--- /dev/null
++++ forkDstPrefix/scene/animation/animation_node_utils.cpp
+@@ -0,0 +1,163 @@
++﻿/**************************************************************************/
++/*  animation_node_utils.cpp                                              */
++/**************************************************************************/
++
++#include "animation_node_utils.h"
++
++#include "scene/animation/animation_blend_tree.h"
++#include "scene/animation/animation_mixer.h"
++#include "scene/resources/animation.h"
++#include "core/io/resource_loader.h"
++
++// Recursive helper to find the actual animation node driving a branch
++static Ref<AnimationNodeAnimation> _find_anim_node(const Ref<AnimationNode> &p_node, int p_depth = 0) {
++	if (p_node.is_null() || p_depth > 10) {
++		return Ref<AnimationNodeAnimation>();
++	}
++
++	// Direct Match
++	Ref<AnimationNodeAnimation> anim_node = p_node;
++	if (anim_node.is_valid()) {
++		return anim_node;
++	}
++
++	// BlendTree: Follow Output
++	Ref<AnimationNodeBlendTree> tree = p_node;
++	if (tree.is_valid()) {
++		List<AnimationNodeBlendTree::NodeConnection> connections;
++		tree->get_node_connections(&connections);
++		for (const AnimationNodeBlendTree::NodeConnection &E : connections) {
++			if (E.input_node == "output") {
++				if (tree->has_node(E.output_node)) {
++					return _find_anim_node(tree->get_node(E.output_node), p_depth + 1);
++				}
++			}
++		}
++		return Ref<AnimationNodeAnimation>();
++	}
++
++	// Generic Children (TimeScale, Blend2, etc): Check first valid child
++	List<AnimationNode::ChildNode> children;
++	p_node->get_child_nodes(&children);
++	for (const AnimationNode::ChildNode &E : children) {
++		Ref<AnimationNodeAnimation> found = _find_anim_node(E.node, p_depth + 1);
++		if (found.is_valid()) {
++			return found;
++		}
++	}
++
++	return Ref<AnimationNodeAnimation>();
++}
++
++double AnimationNodeUtils::get_node_length(const Ref<AnimationNode> &p_node, AnimationMixer *p_mixer) {
++	Ref<AnimationNodeAnimation> anim_node = _find_anim_node(p_node);
++
++	if (anim_node.is_valid()) {
++		if (anim_node->is_using_custom_timeline()) {
++			double t_len = anim_node->get_timeline_length();
++			if (t_len > 0.0001) {
++				return t_len;
++			}
++		}
++
++		StringName anim_name = anim_node->get_animation();
++		Ref<Animation> anim;
++
++		if (p_mixer) {
++			anim = p_mixer->get_animation(anim_name);
++		}
++
++		if (anim.is_null() && String(anim_name).is_absolute_path()) {
++			anim = ResourceLoader::load(anim_name);
++		}
++
++		if (anim.is_valid()) {
++			double len = anim->get_length();
++			return (len > 0.0001) ? len : 1.0;
++		}
++	}
++	return 1.0;
++}
++
++AnimationNodeUtils::NormalizedSyncState AnimationNodeUtils::prepare_normalized_sync_state(
++		bool p_is_normalized,
++		bool p_force_resync,
++		const float *p_weights,
++		int p_blend_points_used,
++		int p_master_idx,
++		AnimationNode::ProcessState *p_process_state,
++		const AnimationMixer::PlaybackInfo &p_pi,
++		void *p_userdata,
++		BlendSpaceLengthFunc p_length_func,
++		BlendSpacePeekFunc p_peek_func) {
++
++	NormalizedSyncState s;
++
++	// Only does anything when caller says we're in "normalized" mode.
++	if (!p_is_normalized) {
++		return s; // enabled == false
++	}
++
++	s.enabled = true;
++
++	AnimationMixer *mixer = p_process_state ? p_process_state->tree : nullptr;
++
++	// Compute virtual length (weighted average of active clips).
++	double w_sum = 0.0;
++	double len_sum = 0.0;
++
++	for (int i = 0; i < p_blend_points_used; i++) {
++		if (p_weights[i] > CMP_EPSILON) {
++			double l = p_length_func(p_userdata, i, mixer);
++			len_sum += l * p_weights[i];
++			w_sum += p_weights[i];
++		}
++	}
++
++	s.virtual_len = (w_sum > 0.0) ? (len_sum / w_sum) : 1.0;
++	if (s.virtual_len < 0.001) {
++		s.virtual_len = 1.0;
++	}
++
++	// One-frame resync when caller requests it (mode change into normalized).
++	if (p_force_resync && p_master_idx != -1 && mixer) {
++		double m_len = p_length_func(p_userdata, p_master_idx, mixer);
++		if (m_len > 0.001) {
++			AnimationMixer::PlaybackInfo pi_peek = p_pi;
++			pi_peek.weight = 0.0;
++			AnimationNode::NodeTimeInfo t_master = p_peek_func(p_userdata, p_master_idx, pi_peek);
++			s.resync_phase = t_master.position / m_len;
++			s.do_resync = true;
++		}
++	}
++
++	return s;
++}
++
++
++void AnimationNodeUtils::apply_normalized_sync_to_child(
++		const NormalizedSyncState &p_state,
++		AnimationMixer::PlaybackInfo &r_pi_child,
++		const AnimationMixer::PlaybackInfo &p_pi_parent,
++		double p_child_len) {
++
++	if (!p_state.enabled) {
++		return;
++	}
++
++	if (p_state.do_resync) {
++		// On mode change, force all clips to the same phase.
++		r_pi_child.seeked = true;
++		r_pi_child.time = p_state.resync_phase * p_child_len;
++	} else if (p_pi_parent.seeked) {
++		// External seek: parent time is "virtual" time.
++		const double phase = (p_state.virtual_len > 0.0) ? (p_pi_parent.time / p_state.virtual_len) : 0.0;
++		r_pi_child.seeked = true;
++		r_pi_child.time = phase * p_child_len;
++	} else {
++		// Normal speed normalization.
++		const double scale = p_child_len / p_state.virtual_len;
++		r_pi_child.delta *= scale;
++		r_pi_child.time *= scale;
++	}
++}
+diff --git forkSrcPrefix/scene/animation/animation_node_utils.h forkDstPrefix/scene/animation/animation_node_utils.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..86d161f5bd0ecfbbf7f2dd5a086f04c2679f9720
+--- /dev/null
++++ forkDstPrefix/scene/animation/animation_node_utils.h
+@@ -0,0 +1,45 @@
++﻿/**************************************************************************/
++/*  animation_node_utils.h                                                */
++/**************************************************************************/
++#pragma once
++
++#include "scene/animation/animation_blend_tree.h"
++#include "scene/animation/animation_mixer.h"
++#include "scene/resources/animation.h"
++#include "core/io/resource_loader.h"
++
++class AnimationNodeUtils {
++public:
++	static double get_node_length(const Ref<AnimationNode> &p_node, AnimationMixer *p_mixer);
++
++	struct NormalizedSyncState {
++		bool enabled = false;      // true when SYNC_MODE_NORMALIZED is active
++		double virtual_len = 1.0;  // weighted average length
++		bool do_resync = false;    // one-shot resync on mode change
++		double resync_phase = 0.0; // [0,1] phase
++	};
++
++	typedef double (*BlendSpaceLengthFunc)(void *p_userdata, int p_index, AnimationMixer *p_mixer);
++	typedef AnimationNode::NodeTimeInfo (*BlendSpacePeekFunc)(void *p_userdata, int p_index, const AnimationMixer::PlaybackInfo &p_pi);
++
++	// NOTE: p_force_resync is true on the frame where sync_mode just changed.
++	static NormalizedSyncState prepare_normalized_sync_state(
++			bool p_is_normalized,
++			bool p_force_resync,
++			const float *p_weights,
++			int p_blend_points_used,
++			int p_master_idx,
++			AnimationNode::ProcessState *p_process_state,
++			const AnimationMixer::PlaybackInfo &p_pi,
++			void *p_userdata,
++			BlendSpaceLengthFunc p_length_func,
++			BlendSpacePeekFunc p_peek_func
++	);
++
++	static void apply_normalized_sync_to_child(
++			const NormalizedSyncState &p_state,
++			AnimationMixer::PlaybackInfo &r_pi_child,
++			const AnimationMixer::PlaybackInfo &p_pi_parent,
++			double p_child_len
++	);
++};
