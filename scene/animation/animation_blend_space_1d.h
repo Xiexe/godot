@@ -42,6 +42,12 @@ public:
 		BLEND_MODE_DISCRETE_CARRY,
 	};
 
+	enum SyncMode {
+		SYNC_MODE_NONE,
+		SYNC_MODE_ABSOLUTE,
+		SYNC_MODE_NORMALIZED
+	};
+
 protected:
 	enum {
 		MAX_BLEND_POINTS = 64
@@ -70,7 +76,12 @@ protected:
 
 	BlendMode blend_mode = BLEND_MODE_INTERPOLATED;
 
-	bool sync = false;
+	SyncMode sync_mode = SYNC_MODE_NORMALIZED;
+	SyncMode last_sync_mode = SYNC_MODE_NORMALIZED;
+	bool pending_resync = false;
+
+	friend double _blend_space_1d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer);
+	friend AnimationNode::NodeTimeInfo _blend_space_1d_peek(void *p_userdata, int p_index, const AnimationMixer::PlaybackInfo &p_pi);
 
 	void _validate_property(PropertyInfo &p_property) const;
 	static void _bind_methods();
@@ -109,8 +120,8 @@ public:
 	void set_blend_mode(BlendMode p_blend_mode);
 	BlendMode get_blend_mode() const;
 
-	void set_use_sync(bool p_sync);
-	bool is_using_sync() const;
+	void set_sync_mode(SyncMode p_mode);
+	SyncMode get_sync_mode() const;
 
 	virtual NodeTimeInfo _process(const AnimationMixer::PlaybackInfo p_playback_info, bool p_test_only = false) override;
 	String get_caption() const override;
@@ -122,3 +133,4 @@ public:
 };
 
 VARIANT_ENUM_CAST(AnimationNodeBlendSpace1D::BlendMode)
+VARIANT_ENUM_CAST(AnimationNodeBlendSpace1D::SyncMode)

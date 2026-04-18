@@ -345,7 +345,7 @@ void AnimationNodeBlendSpace1DEditor::_update_space() {
 	max_value->set_value(blend_space->get_max_space());
 	min_value->set_value(blend_space->get_min_space());
 
-	sync->set_pressed(blend_space->is_using_sync());
+	sync_mode->select(blend_space->get_sync_mode());
 	interpolation->select(blend_space->get_blend_mode());
 
 	label_value->set_text(blend_space->get_value_label());
@@ -371,8 +371,8 @@ void AnimationNodeBlendSpace1DEditor::_config_changed(double) {
 	undo_redo->add_undo_method(blend_space.ptr(), "set_min_space", blend_space->get_min_space());
 	undo_redo->add_do_method(blend_space.ptr(), "set_snap", snap_value->get_value());
 	undo_redo->add_undo_method(blend_space.ptr(), "set_snap", blend_space->get_snap());
-	undo_redo->add_do_method(blend_space.ptr(), "set_use_sync", sync->is_pressed());
-	undo_redo->add_undo_method(blend_space.ptr(), "set_use_sync", blend_space->is_using_sync());
+	undo_redo->add_do_method(blend_space.ptr(), "set_sync_mode", sync_mode->get_selected());
+	undo_redo->add_undo_method(blend_space.ptr(), "set_sync_mode", blend_space->get_sync_mode());
 	undo_redo->add_do_method(blend_space.ptr(), "set_blend_mode", interpolation->get_selected());
 	undo_redo->add_undo_method(blend_space.ptr(), "set_blend_mode", blend_space->get_blend_mode());
 	undo_redo->add_do_method(this, "_update_space");
@@ -596,6 +596,12 @@ void AnimationNodeBlendSpace1DEditor::_notification(int p_what) {
 			tool_erase->set_button_icon(get_editor_theme_icon(SNAME("Remove")));
 			snap->set_button_icon(get_editor_theme_icon(SNAME("SnapGrid")));
 			open_editor->set_button_icon(get_editor_theme_icon(SNAME("Edit")));
+
+			sync_mode->clear();
+			sync_mode->add_item(TTR("No Sync"), 0);
+			sync_mode->add_item(TTR("Absolute"), 1);
+			sync_mode->add_item(TTR("Normalized"), 2);
+
 			interpolation->clear();
 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackContinuous")), TTR("Continuous"), 0);
 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackDiscrete")), TTR("Discrete"), 1);
@@ -655,7 +661,7 @@ void AnimationNodeBlendSpace1DEditor::edit(const Ref<AnimationNode> &p_node) {
 	label_value->set_editable(!read_only);
 	min_value->set_editable(!read_only);
 	max_value->set_editable(!read_only);
-	sync->set_disabled(read_only);
+	sync_mode->set_disabled(read_only);
 	interpolation->set_disabled(read_only);
 }
 
@@ -722,9 +728,9 @@ AnimationNodeBlendSpace1DEditor::AnimationNodeBlendSpace1DEditor() {
 
 	top_hb->add_child(memnew(VSeparator));
 	top_hb->add_child(memnew(Label(TTR("Sync:"))));
-	sync = memnew(CheckBox);
-	top_hb->add_child(sync);
-	sync->connect(SceneStringName(toggled), callable_mp(this, &AnimationNodeBlendSpace1DEditor::_config_changed));
+	sync_mode = memnew(OptionButton);
+	top_hb->add_child(sync_mode);
+	sync_mode->connect(SceneStringName(item_selected), callable_mp(this, &AnimationNodeBlendSpace1DEditor::_config_changed));
 
 	top_hb->add_child(memnew(VSeparator));
 

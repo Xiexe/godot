@@ -117,6 +117,10 @@
     <Compile Include="Core\NativeInterop\VariantUtils.generic.cs" />
     <Compile Include="Core\NodePath.cs" />
     <Compile Include="Core\Plane.cs" />
+    <Compile Include="Core\InputEventFastPath.cs" />
+    <Compile Include="Core\PhysicsDirectSpaceState2D.cs" />
+    <Compile Include="Core\PhysicsDirectSpaceState3D.cs" />
+    <Compile Include="Core\PhysicsQueryResults.cs" />
     <Compile Include="Core\Projection.cs" />
     <Compile Include="Core\Quaternion.cs" />
     <Compile Include="Core\Rect2.cs" />

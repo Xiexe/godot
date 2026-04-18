@@ -87,7 +87,7 @@ void AnimationNodeBlendSpace2DEditor::edit(const Ref<AnimationNode> &p_node) {
 	edit_y->set_editable(!read_only);
 	tool_triangle->set_disabled(read_only);
 	auto_triangles->set_disabled(read_only);
-	sync->set_disabled(read_only);
+	sync_mode->set_disabled(read_only);
 	interpolation->set_disabled(read_only);
 }
 
@@ -658,7 +658,7 @@ void AnimationNodeBlendSpace2DEditor::_update_space() {
 
 	auto_triangles->set_pressed(blend_space->get_auto_triangles());
 
-	sync->set_pressed(blend_space->is_using_sync());
+	sync_mode->select(blend_space->get_sync_mode());
 	interpolation->select(blend_space->get_blend_mode());
 
 	max_x_value->set_value(blend_space->get_max_space().x);
@@ -692,8 +692,8 @@ void AnimationNodeBlendSpace2DEditor::_config_changed(double) {
 	undo_redo->add_undo_method(blend_space.ptr(), "set_min_space", blend_space->get_min_space());
 	undo_redo->add_do_method(blend_space.ptr(), "set_snap", Vector2(snap_x->get_value(), snap_y->get_value()));
 	undo_redo->add_undo_method(blend_space.ptr(), "set_snap", blend_space->get_snap());
-	undo_redo->add_do_method(blend_space.ptr(), "set_use_sync", sync->is_pressed());
-	undo_redo->add_undo_method(blend_space.ptr(), "set_use_sync", blend_space->is_using_sync());
+	undo_redo->add_do_method(blend_space.ptr(), "set_sync_mode", sync_mode->get_selected());
+	undo_redo->add_undo_method(blend_space.ptr(), "set_sync_mode", blend_space->get_sync_mode());
 	undo_redo->add_do_method(blend_space.ptr(), "set_blend_mode", interpolation->get_selected());
 	undo_redo->add_undo_method(blend_space.ptr(), "set_blend_mode", blend_space->get_blend_mode());
 	undo_redo->add_do_method(this, "_update_space");
@@ -823,6 +823,12 @@ void AnimationNodeBlendSpace2DEditor::_notification(int p_what) {
 			snap->set_button_icon(get_editor_theme_icon(SNAME("SnapGrid")));
 			open_editor->set_button_icon(get_editor_theme_icon(SNAME("Edit")));
 			auto_triangles->set_button_icon(get_editor_theme_icon(SNAME("AutoTriangle")));
+
+			sync_mode->clear();
+			sync_mode->add_item(TTR("No Sync"), 0);
+			sync_mode->add_item(TTR("Absolute"), 1);
+			sync_mode->add_item(TTR("Normalized"), 2);
+
 			interpolation->clear();
 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackContinuous")), TTR("Continuous"), 0);
 			interpolation->add_icon_item(get_editor_theme_icon(SNAME("TrackDiscrete")), TTR("Discrete"), 1);
@@ -976,9 +982,9 @@ AnimationNodeBlendSpace2DEditor::AnimationNodeBlendSpace2DEditor() {
 	top_hb->add_child(memnew(VSeparator));
 
 	top_hb->add_child(memnew(Label(TTR("Sync:"))));
-	sync = memnew(CheckBox);
-	top_hb->add_child(sync);
-	sync->connect(SceneStringName(toggled), callable_mp(this, &AnimationNodeBlendSpace2DEditor::_config_changed));
+	sync_mode = memnew(OptionButton);
+	top_hb->add_child(sync_mode);
+	sync_mode->connect(SceneStringName(item_selected), callable_mp(this, &AnimationNodeBlendSpace2DEditor::_config_changed));
 
 	top_hb->add_child(memnew(VSeparator));
 

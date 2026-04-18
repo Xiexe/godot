@@ -42,6 +42,12 @@ public:
 		BLEND_MODE_DISCRETE_CARRY,
 	};
 
+	enum SyncMode {
+		SYNC_MODE_NONE,
+		SYNC_MODE_ABSOLUTE,
+		SYNC_MODE_NORMALIZED
+	};
+
 protected:
 	enum {
 		MAX_BLEND_POINTS = 64
@@ -69,7 +75,15 @@ protected:
 	Vector2 snap = Vector2(0.1, 0.1);
 	String x_label = "x";
 	String y_label = "y";
+
 	BlendMode blend_mode = BLEND_MODE_INTERPOLATED;
+
+	SyncMode sync_mode = SYNC_MODE_NORMALIZED;
+	SyncMode last_sync_mode = SYNC_MODE_NORMALIZED;
+	bool pending_resync = false;
+
+	friend double _blend_space_2d_get_length(void *p_userdata, int p_index, AnimationMixer *p_mixer);
+	friend AnimationNode::NodeTimeInfo _blend_space_2d_peek(void *p_userdata, int p_index, const AnimationMixer::PlaybackInfo &p_pi);
 
 	void _add_blend_point(int p_index, const Ref<AnimationRootNode> &p_node);
 	void _set_triangles(const Vector<int> &p_triangles);
@@ -82,8 +96,6 @@ protected:
 
 	void _update_triangles();
 	void _queue_auto_triangles();
-
-	bool sync = false;
 
 	void _validate_property(PropertyInfo &p_property) const;
 	static void _bind_methods();
@@ -138,8 +150,8 @@ public:
 	void set_blend_mode(BlendMode p_blend_mode);
 	BlendMode get_blend_mode() const;
 
-	void set_use_sync(bool p_sync);
-	bool is_using_sync() const;
+	void set_sync_mode(SyncMode p_mode);
+	SyncMode get_sync_mode() const;
 
 	virtual Ref<AnimationNode> get_child_by_name(const StringName &p_name) const override;
 
@@ -148,3 +160,4 @@ public:
 };
 
 VARIANT_ENUM_CAST(AnimationNodeBlendSpace2D::BlendMode)
+VARIANT_ENUM_CAST(AnimationNodeBlendSpace2D::SyncMode)
