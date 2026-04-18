@@ -2144,6 +2144,7 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
 	CRASH_COND(!itype.is_object_type);
 
 	bool is_derived_type = itype.base_name != StringName();
+	bool is_node_type = itype.cname == StringName("Node");
 
 	if (!is_derived_type) {
 		// Some GodotObject assertions
@@ -2164,6 +2165,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
 	output.append("using System.ComponentModel;\n"); // EditorBrowsable
 	output.append("using System.Diagnostics;\n"); // DebuggerBrowsable
 	output.append("using Godot.NativeInterop;\n");
+	if (is_node_type) {
+		output.append("using Godot.Bridge;\n");
+	}
 
 	output.append("\n#nullable disable\n");
 
@@ -2498,6 +2502,13 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
 				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name << ".NativeValue))\n"
 				   << INDENT2 "{\n";
 
+			if (is_node_type && imethod.name == "_input") {
+				output << INDENT3 "if (FastInputDispatch.TryInvokeInput(this, args, out ret))\n"
+					   << INDENT3 "{\n"
+					   << INDENT4 "return true;\n"
+					   << INDENT3 "}\n";
+			}
+
 			if (imethod.return_type.cname != name_cache.type_void) {
 				output << INDENT3 "var callRet = ";
 			} else {
@@ -2580,6 +2591,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
 			// generators take care of generating those override methods.
 			output << INDENT2 "if (method == MethodName." << imethod.proxy_name
 				   << ")\n" INDENT2 "{\n"
+				   << (is_node_type && imethod.name == "_input" ?
+									 String(INDENT3 "if (FastInputDispatch.HasInputHandler(this))\n" INDENT3 "{\n" INDENT4 "return true;\n" INDENT3 "}\n") :
+									 String())
 				   << INDENT3 "if (" CS_METHOD_HAS_GODOT_CLASS_METHOD "("
 				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name
 				   << ".NativeValue.DangerousSelfRef))\n" INDENT3 "{\n"

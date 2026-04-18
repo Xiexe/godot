@@ -173,6 +173,64 @@ namespace Godot.NativeInterop
 
         internal static partial float godotsharp_color_get_ok_hsl_l(in Color p_self);
 
+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_intersect_ray(
+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult2D r_result);
+
+        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_point(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
+
+        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_shape(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
+
+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_cast_motion(
+            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
+
+        internal static partial int godotsharp_physics_direct_space_state_2d_collide_shape(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision2D* r_results, int p_resultMax);
+
+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_rest_info(
+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo2D r_result);
+
+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_intersect_ray(
+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult3D r_result);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_all(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayQueryResult3D* r_results, int p_resultMax);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
+            PhysicsRayQueryResult3D* r_results);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
+            PhysicsRayQueryResult3D* r_results, int p_maxResultsPerCommand, int* r_resultCounts);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_point(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_shape(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
+
+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_cast_motion(
+            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
+
+        internal static partial int godotsharp_physics_direct_space_state_3d_collide_shape(
+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision3D* r_results, int p_resultMax);
+
+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_rest_info(
+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo3D r_result);
+
+        internal static partial int godotsharp_input_event_get_fast_type(IntPtr p_event);
+
+        internal static partial void godotsharp_input_event_as_mouse_motion(
+            IntPtr p_event, out InputEventMouseMotionData r_event);
+
+        internal static partial void godotsharp_input_event_as_mouse_button(
+            IntPtr p_event, out InputEventMouseButtonData r_event);
+
+        internal static partial void godotsharp_input_event_as_key(
+            IntPtr p_event, out InputEventKeyData r_event);
+
         // GDNative functions
 
         // gdnative.h

@@ -135,7 +135,12 @@ constexpr int GIZMO_HIGHLIGHT_AXIS_TRACKBALL = 16;
 constexpr real_t ZOOM_FREELOOK_INDICATOR_DELAY_S = 1.5;
 
 constexpr real_t MIN_Z = 0.01;
-constexpr real_t MAX_Z = 1000000.0;
+
+#ifdef REAL_T_IS_DOUBLE
+constexpr real_t MAX_Z = 100'000'000.0;
+#else
+constexpr real_t MAX_Z = 1'000'000.0;
+#endif
 
 constexpr real_t MIN_FOV = 0.01;
 constexpr real_t MAX_FOV = 179;

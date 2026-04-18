@@ -162,7 +162,24 @@ public:
 		int face_index = -1;
 	};
 
+	struct RayCommand {
+		Vector3 from;
+		Vector3 to;
+	};
+
+	struct RayBatchResult {
+		Vector3 position;
+		Vector3 normal;
+		RID rid;
+		uint64_t collider_id = 0;
+		int32_t shape = 0;
+		int32_t face_index = -1;
+	};
+
 	virtual bool intersect_ray(const RayParameters &p_parameters, RayResult &r_result) = 0;
+	virtual int intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max);
+	virtual int intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count);
+	virtual int intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts);
 
 	struct ShapeResult {
 		RID rid;
