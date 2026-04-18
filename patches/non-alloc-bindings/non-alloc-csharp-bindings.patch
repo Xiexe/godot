@@ -1,7 +1,36 @@
-diff --git a/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp b/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
-index e62e7289ac..2b68752a5e 100644
---- a/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
-+++ b/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
+diff --git forkSrcPrefix/servers/physics_3d/physics_server_3d.h forkDstPrefix/servers/physics_3d/physics_server_3d.h
+index 3738c1ee7061f67ae815cf79d9d0af3d815722ea..e16702d76d4158b5b8ef6c16a9e2dcc5ca7eee8a 100644
+--- forkSrcPrefix/servers/physics_3d/physics_server_3d.h
++++ forkDstPrefix/servers/physics_3d/physics_server_3d.h
+@@ -162,7 +162,24 @@ public:
+ 		int face_index = -1;
+ 	};
+ 
++	struct RayCommand {
++		Vector3 from;
++		Vector3 to;
++	};
++
++	struct RayBatchResult {
++		Vector3 position;
++		Vector3 normal;
++		RID rid;
++		uint64_t collider_id = 0;
++		int32_t shape = 0;
++		int32_t face_index = -1;
++	};
++
+ 	virtual bool intersect_ray(const RayParameters &p_parameters, RayResult &r_result) = 0;
++	virtual int intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max);
++	virtual int intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count);
++	virtual int intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts);
+ 
+ 	struct ShapeResult {
+ 		RID rid;
+diff --git forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
+index d117a7eb862d5966f744d2c1a91b47b8f57cc061..5d5a1312da000db1163b0e41dc22806362937203 100644
+--- forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
++++ forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
 @@ -392,7 +392,7 @@ bool JoltPhysicsDirectSpaceState3D::_body_motion_collide(const JoltBody3D &p_bod
  	return count > 0;
  }
@@ -239,10 +268,10 @@ index e62e7289ac..2b68752a5e 100644
  int JoltPhysicsDirectSpaceState3D::intersect_point(const PointParameters &p_parameters, ShapeResult *r_results, int p_result_max) {
  	ERR_FAIL_COND_V_MSG(space->is_stepping(), false, "intersect_point must not be called while the physics space is being stepped.");
  
-diff --git a/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h b/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
-index 3dd9eda011..eaccb0c016 100644
---- a/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
-+++ b/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
+diff --git forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
+index d28af77b047e5af60666a690978e39ef27cac1d4..925ad468671579fd207fc91ae39d53d161b1535b 100644
+--- forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
++++ forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
 @@ -59,7 +59,8 @@ class JoltPhysicsDirectSpaceState3D final : public PhysicsDirectSpaceState3D {
  	bool _body_motion_cast(const JoltBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_scale, const Vector3 &p_motion, bool p_collide_separation_ray, const HashSet<RID> &p_excluded_bodies, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction) const;
  	bool _body_motion_collide(const JoltBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, float p_margin, int p_max_collisions, const HashSet<RID> &p_excluded_bodies, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
@@ -263,11 +292,11 @@ index 3dd9eda011..eaccb0c016 100644
  	virtual int intersect_point(const PointParameters &p_parameters, ShapeResult *r_results, int p_result_max) override;
  	virtual int intersect_shape(const ShapeParameters &p_parameters, ShapeResult *r_results, int p_result_max) override;
  	virtual bool cast_motion(const ShapeParameters &p_parameters, real_t &r_closest_safe, real_t &r_closest_unsafe, ShapeRestInfo *r_info = nullptr) override;
-diff --git a/modules/mono/editor/bindings_generator.cpp b/modules/mono/editor/bindings_generator.cpp
-index 056f77f69d..73ebcdfc97 100644
---- a/modules/mono/editor/bindings_generator.cpp
-+++ b/modules/mono/editor/bindings_generator.cpp
-@@ -2145,6 +2145,7 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+diff --git forkSrcPrefix/modules/mono/editor/bindings_generator.cpp forkDstPrefix/modules/mono/editor/bindings_generator.cpp
+index 666ee8b22a7007d265f52fbb378307abcb12510e..26cd9c08a495dc372bf8097e542f2024c19246a1 100644
+--- forkSrcPrefix/modules/mono/editor/bindings_generator.cpp
++++ forkDstPrefix/modules/mono/editor/bindings_generator.cpp
+@@ -2144,6 +2144,7 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
  	CRASH_COND(!itype.is_object_type);
  
  	bool is_derived_type = itype.base_name != StringName();
@@ -275,7 +304,7 @@ index 056f77f69d..73ebcdfc97 100644
  
  	if (!is_derived_type) {
  		// Some GodotObject assertions
-@@ -2165,6 +2166,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+@@ -2164,6 +2165,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
  	output.append("using System.ComponentModel;\n"); // EditorBrowsable
  	output.append("using System.Diagnostics;\n"); // DebuggerBrowsable
  	output.append("using Godot.NativeInterop;\n");
@@ -285,7 +314,7 @@ index 056f77f69d..73ebcdfc97 100644
  
  	output.append("\n#nullable disable\n");
  
-@@ -2499,6 +2503,13 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+@@ -2498,6 +2502,13 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
  				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name << ".NativeValue))\n"
  				   << INDENT2 "{\n";
  
@@ -299,7 +328,7 @@ index 056f77f69d..73ebcdfc97 100644
  			if (imethod.return_type.cname != name_cache.type_void) {
  				output << INDENT3 "var callRet = ";
  			} else {
-@@ -2581,6 +2592,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+@@ -2580,6 +2591,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
  			// generators take care of generating those override methods.
  			output << INDENT2 "if (method == MethodName." << imethod.proxy_name
  				   << ")\n" INDENT2 "{\n"
@@ -309,11 +338,80 @@ index 056f77f69d..73ebcdfc97 100644
  				   << INDENT3 "if (" CS_METHOD_HAS_GODOT_CLASS_METHOD "("
  				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name
  				   << ".NativeValue.DangerousSelfRef))\n" INDENT3 "{\n"
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs b/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
+index 48150535486654e9782d82b657d68cb04d1e9e10..ae4eb7214663631749da592c8fb80b99cc4b637f 100644
+--- forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
+@@ -173,6 +173,64 @@ namespace Godot.NativeInterop
+ 
+         internal static partial float godotsharp_color_get_ok_hsl_l(in Color p_self);
+ 
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_intersect_ray(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult2D r_result);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_point(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_cast_motion(
++            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_collide_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision2D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_rest_info(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo2D r_result);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_intersect_ray(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult3D r_result);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_all(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
++            PhysicsRayQueryResult3D* r_results);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
++            PhysicsRayQueryResult3D* r_results, int p_maxResultsPerCommand, int* r_resultCounts);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_point(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_cast_motion(
++            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_collide_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision3D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_rest_info(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo3D r_result);
++
++        internal static partial int godotsharp_input_event_get_fast_type(IntPtr p_event);
++
++        internal static partial void godotsharp_input_event_as_mouse_motion(
++            IntPtr p_event, out InputEventMouseMotionData r_event);
++
++        internal static partial void godotsharp_input_event_as_mouse_button(
++            IntPtr p_event, out InputEventMouseButtonData r_event);
++
++        internal static partial void godotsharp_input_event_as_key(
++            IntPtr p_event, out InputEventKeyData r_event);
++
+         // GDNative functions
+ 
+         // gdnative.h
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
 new file mode 100644
-index 0000000000..18f2915457
+index 0000000000000000000000000000000000000000..18f2915457a2266a6fe771101b0bdb5e5c60b33c
 --- /dev/null
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
 @@ -0,0 +1,309 @@
 +namespace Godot
 +{
@@ -624,80 +722,11 @@ index 0000000000..18f2915457
 +    }
 +}
 +}
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs b/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
-index 4815053548..ae4eb72146 100644
---- a/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
-@@ -173,6 +173,64 @@ namespace Godot.NativeInterop
- 
-         internal static partial float godotsharp_color_get_ok_hsl_l(in Color p_self);
- 
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_intersect_ray(
-+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult2D r_result);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_point(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_shape(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
-+
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_cast_motion(
-+            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_2d_collide_shape(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision2D* r_results, int p_resultMax);
-+
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_rest_info(
-+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo2D r_result);
-+
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_intersect_ray(
-+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult3D r_result);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_all(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayQueryResult3D* r_results, int p_resultMax);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
-+            PhysicsRayQueryResult3D* r_results);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
-+            PhysicsRayQueryResult3D* r_results, int p_maxResultsPerCommand, int* r_resultCounts);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_point(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_shape(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
-+
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_cast_motion(
-+            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
-+
-+        internal static partial int godotsharp_physics_direct_space_state_3d_collide_shape(
-+            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision3D* r_results, int p_resultMax);
-+
-+        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_rest_info(
-+            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo3D r_result);
-+
-+        internal static partial int godotsharp_input_event_get_fast_type(IntPtr p_event);
-+
-+        internal static partial void godotsharp_input_event_as_mouse_motion(
-+            IntPtr p_event, out InputEventMouseMotionData r_event);
-+
-+        internal static partial void godotsharp_input_event_as_mouse_button(
-+            IntPtr p_event, out InputEventMouseButtonData r_event);
-+
-+        internal static partial void godotsharp_input_event_as_key(
-+            IntPtr p_event, out InputEventKeyData r_event);
-+
-         // GDNative functions
- 
-         // gdnative.h
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
 new file mode 100644
-index 0000000000..f7f1266a0a
+index 0000000000000000000000000000000000000000..f7f1266a0a11f49ccc28f8ebc2d182c9b72e5f7f
 --- /dev/null
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
 @@ -0,0 +1,57 @@
 +using System;
 +using Godot.NativeInterop;
@@ -756,11 +785,11 @@ index 0000000000..f7f1266a0a
 +        }
 +    }
 +}
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
 new file mode 100644
-index 0000000000..c60c9163fe
+index 0000000000000000000000000000000000000000..c60c9163fe29659bd26fcbbca0f9287799f5a59e
 --- /dev/null
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
 @@ -0,0 +1,113 @@
 +using System;
 +using Godot.NativeInterop;
@@ -875,11 +904,11 @@ index 0000000000..c60c9163fe
 +        }
 +    }
 +}
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
 new file mode 100644
-index 0000000000..7ff4fb7b8e
+index 0000000000000000000000000000000000000000..7ff4fb7b8e5ea6d94c84c0d97c8c94dc0cde2ae8
 --- /dev/null
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
 @@ -0,0 +1,110 @@
 +using System.Runtime.InteropServices;
 +
@@ -991,10 +1020,10 @@ index 0000000000..7ff4fb7b8e
 +        public Vector3 ColliderPoint;
 +    }
 +}
-diff --git a/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj b/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
-index beb6460b85..ca05e70d82 100644
---- a/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
-+++ b/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
+index 474fdc9c9441fa7328126212550f665419266eed..b8d8348763a37684277900cbbca92263b2877db5 100644
+--- forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
 @@ -117,6 +117,10 @@
      <Compile Include="Core\NativeInterop\VariantUtils.generic.cs" />
      <Compile Include="Core\NodePath.cs" />
@@ -1006,20 +1035,22 @@ index beb6460b85..ca05e70d82 100644
      <Compile Include="Core\Projection.cs" />
      <Compile Include="Core\Quaternion.cs" />
      <Compile Include="Core\Rect2.cs" />
-diff --git a/modules/mono/glue/runtime_interop.cpp b/modules/mono/glue/runtime_interop.cpp
-index b1f52e1530..4485f404aa 100644
---- a/modules/mono/glue/runtime_interop.cpp
-+++ b/modules/mono/glue/runtime_interop.cpp
-@@ -41,11 +41,16 @@
- #include "core/config/project_settings.h"
+diff --git forkSrcPrefix/modules/mono/glue/runtime_interop.cpp forkDstPrefix/modules/mono/glue/runtime_interop.cpp
+index 2026407c034264d48ece0202f1e821ba3074d884..9ce7957374bc976a0992ac570bbbf9711a73aa97 100644
+--- forkSrcPrefix/modules/mono/glue/runtime_interop.cpp
++++ forkDstPrefix/modules/mono/glue/runtime_interop.cpp
+@@ -41,6 +41,7 @@
  #include "core/debugger/engine_debugger.h"
  #include "core/debugger/script_debugger.h"
+ #include "core/io/compression.h"
 +#include "core/input/input_event.h"
  #include "core/io/marshalls.h"
+ #include "core/io/resource_loader.h"
  #include "core/object/class_db.h"
- #include "core/object/method_bind.h"
+@@ -48,6 +49,10 @@
  #include "core/os/os.h"
  #include "core/string/string_name.h"
+ #include "core/variant/variant_parser.h"
 +#include "servers/physics_2d/physics_server_2d.h"
 +#include "servers/physics_3d/physics_server_3d.h"
 +
@@ -1027,7 +1058,7 @@ index b1f52e1530..4485f404aa 100644
  
  #ifdef TOOLS_ENABLED
  #include "editor/file_system/editor_file_system.h"
-@@ -60,10 +65,751 @@ static_assert(sizeof(SafeRefCount) == sizeof(uint32_t));
+@@ -62,10 +67,751 @@ static_assert(sizeof(SafeRefCount) == sizeof(uint32_t));
  
  typedef Object *(*godotsharp_class_creation_func)(bool);
  
@@ -1779,7 +1810,7 @@ index b1f52e1530..4485f404aa 100644
  MethodBind *godotsharp_method_bind_get_method(const StringName *p_classname, const StringName *p_methodname) {
  	return ClassDB::get_method(*p_classname, *p_methodname);
  }
-@@ -1668,6 +2414,25 @@ static const void *unmanaged_callbacks[]{
+@@ -1670,6 +2416,25 @@ static const void *unmanaged_callbacks[]{
  	(void *)godotsharp_color_get_ok_hsl_h,
  	(void *)godotsharp_color_get_ok_hsl_s,
  	(void *)godotsharp_color_get_ok_hsl_l,
@@ -1805,12 +1836,12 @@ index b1f52e1530..4485f404aa 100644
  	(void *)godotsharp_method_bind_ptrcall,
  	(void *)godotsharp_method_bind_call,
  	(void *)godotsharp_variant_new_string_name,
-diff --git a/servers/physics_3d/physics_server_3d.cpp b/servers/physics_3d/physics_server_3d.cpp
-index b1e0905c08..c7b81dd557 100644
---- a/servers/physics_3d/physics_server_3d.cpp
-+++ b/servers/physics_3d/physics_server_3d.cpp
-@@ -33,6 +33,28 @@
- #include "core/config/project_settings.h"
+diff --git forkSrcPrefix/servers/physics_3d/physics_server_3d.cpp forkDstPrefix/servers/physics_3d/physics_server_3d.cpp
+index 67dee00fe2d9d8d11fb361ab7eaece0341e234b2..e96d449462cad8984b221fcde84482c1fbf50657 100644
+--- forkSrcPrefix/servers/physics_3d/physics_server_3d.cpp
++++ forkDstPrefix/servers/physics_3d/physics_server_3d.cpp
+@@ -34,6 +34,28 @@
+ #include "core/object/class_db.h"
  #include "core/variant/typed_array.h"
  
 +namespace {
@@ -1838,7 +1869,7 @@ index b1e0905c08..c7b81dd557 100644
  void PhysicsServer3DRenderingServerHandler::set_vertex(int p_vertex_id, const Vector3 &p_vertex) {
  	GDVIRTUAL_CALL(_set_vertex, p_vertex_id, p_vertex);
  }
-@@ -382,6 +404,89 @@ Dictionary PhysicsDirectSpaceState3D::_intersect_ray(RequiredParam<PhysicsRayQue
+@@ -383,6 +405,89 @@ Dictionary PhysicsDirectSpaceState3D::_intersect_ray(RequiredParam<PhysicsRayQue
  	return d;
  }
  
@@ -1928,32 +1959,3 @@ index b1e0905c08..c7b81dd557 100644
  TypedArray<Dictionary> PhysicsDirectSpaceState3D::_intersect_point(RequiredParam<PhysicsPointQueryParameters3D> rp_point_query, int p_max_results) {
  	EXTRACT_PARAM_OR_FAIL_V(p_point_query, rp_point_query, TypedArray<Dictionary>());
  
-diff --git a/servers/physics_3d/physics_server_3d.h b/servers/physics_3d/physics_server_3d.h
-index 77536d60ea..f7fd1538c1 100644
---- a/servers/physics_3d/physics_server_3d.h
-+++ b/servers/physics_3d/physics_server_3d.h
-@@ -162,7 +162,24 @@ public:
- 		int face_index = -1;
- 	};
- 
-+	struct RayCommand {
-+		Vector3 from;
-+		Vector3 to;
-+	};
-+
-+	struct RayBatchResult {
-+		Vector3 position;
-+		Vector3 normal;
-+		RID rid;
-+		uint64_t collider_id = 0;
-+		int32_t shape = 0;
-+		int32_t face_index = -1;
-+	};
-+
- 	virtual bool intersect_ray(const RayParameters &p_parameters, RayResult &r_result) = 0;
-+	virtual int intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max);
-+	virtual int intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count);
-+	virtual int intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts);
- 
- 	struct ShapeResult {
- 		RID rid;
