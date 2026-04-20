@@ -1,0 +1,823 @@
+diff --git forkSrcPrefix/tests/scene/test_node.cpp forkDstPrefix/tests/scene/test_node.cpp
+index 5a7af799ae1cf7a6a5c10815539734b76c70f972..42c0f1e9de83e12616f20807dbc74f509360d260 100644
+--- forkSrcPrefix/tests/scene/test_node.cpp
++++ forkDstPrefix/tests/scene/test_node.cpp
+@@ -38,6 +38,13 @@ TEST_FORCE_LINK(test_node)
+ #include "scene/main/node.h"
+ #include "scene/main/scene_tree.h"
+ #include "scene/main/window.h"
++#ifndef _3D_DISABLED
++#include "scene/3d/node_3d.h"
++#include "scene/3d/skeleton_3d.h"
++#include "scene/animation/animation_player.h"
++#include "scene/resources/animation.h"
++#include "scene/resources/animation_library.h"
++#endif
+ #include "scene/resources/packed_scene.h"
+ #include "tests/test_utils.h"
+ 
+@@ -60,10 +67,17 @@ protected:
+ 			case NOTIFICATION_PROCESS: {
+ 				process_counter++;
+ 				push_self();
++				push_notification(p_what);
++			} break;
++			case NOTIFICATION_LATE_PROCESS: {
++				late_process_counter++;
++				push_self();
++				push_notification(p_what);
+ 			} break;
+ 			case NOTIFICATION_PHYSICS_PROCESS: {
+ 				physics_process_counter++;
+ 				push_self();
++				push_notification(p_what);
+ 			} break;
+ 		}
+ 	}
+@@ -85,16 +99,24 @@ private:
+ 		}
+ 	}
+ 
++	void push_notification(int p_what) {
++		if (notification_list) {
++			notification_list->push_back(p_what);
++		}
++	}
++
+ public:
+ 	int internal_process_counter = 0;
+ 	int internal_physics_process_counter = 0;
+ 	int process_counter = 0;
++	int late_process_counter = 0;
+ 	int physics_process_counter = 0;
+ 
+ 	Node *exported_node = nullptr;
+ 	Array exported_nodes;
+ 
+ 	List<Node *> *callback_list = nullptr;
++	List<int> *notification_list = nullptr;
+ 
+ 	void set_exported_node(Node *p_node) { exported_node = p_node; }
+ 	Node *get_exported_node() const { return exported_node; }
+@@ -110,6 +132,52 @@ public:
+ 	}
+ };
+ 
++#ifndef _3D_DISABLED
++class SkeletonPoseDriver : public Node {
++	GDCLASS(SkeletonPoseDriver, Node);
++
++protected:
++	static void _bind_methods() {}
++
++	void _notification(int p_what) {
++		if (p_what == NOTIFICATION_PROCESS) {
++			ERR_FAIL_NULL(skeleton);
++			skeleton->set_bone_pose_position(bone_idx, target_pose_position);
++		}
++	}
++
++public:
++	Skeleton3D *skeleton = nullptr;
++	int bone_idx = -1;
++	Vector3 target_pose_position;
++};
++
++class LateStateProbe : public Node {
++	GDCLASS(LateStateProbe, Node);
++
++protected:
++	static void _bind_methods() {}
++
++	void _notification(int p_what) {
++		if (p_what == NOTIFICATION_LATE_PROCESS) {
++			late_process_counter++;
++			ERR_FAIL_NULL(animated_node);
++			ERR_FAIL_NULL(skeleton);
++			animated_position = animated_node->get_position();
++			skeleton_global_pose_position = skeleton->get_bone_global_pose(bone_idx).origin;
++		}
++	}
++
++public:
++	Node3D *animated_node = nullptr;
++	Skeleton3D *skeleton = nullptr;
++	int bone_idx = -1;
++	int late_process_counter = 0;
++	Vector3 animated_position;
++	Vector3 skeleton_global_pose_position;
++};
++#endif
++
+ TEST_CASE("[SceneTree][Node] Testing node operations with a very simple scene tree") {
+ 	Node *node = memnew(Node);
+ 
+@@ -649,6 +717,18 @@ TEST_CASE("[Node] Processing checks") {
+ 		CHECK_FALSE(node->is_processing());
+ 	}
+ 
++	SUBCASE("Late processing") {
++		CHECK_FALSE(node->is_processing_late());
++
++		node->set_process_late(true);
++
++		CHECK(node->is_processing_late());
++
++		node->set_process_late(false);
++
++		CHECK_FALSE(node->is_processing_late());
++	}
++
+ 	SUBCASE("Physics processing") {
+ 		CHECK_FALSE(node->is_physics_processing());
+ 
+@@ -746,6 +826,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 
+ 	SUBCASE("No process") {
+ 		CHECK_EQ(0, node->process_counter);
++		CHECK_EQ(0, node->late_process_counter);
+ 		CHECK_EQ(0, node->physics_process_counter);
+ 	}
+ 
+@@ -754,6 +835,18 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->process(0);
+ 
+ 		CHECK_EQ(1, node->process_counter);
++		CHECK_EQ(0, node->late_process_counter);
++		CHECK_EQ(0, node->physics_process_counter);
++		CHECK_EQ(0, node->internal_process_counter);
++		CHECK_EQ(0, node->internal_physics_process_counter);
++	}
++
++	SUBCASE("Late process") {
++		node->set_process_late(true);
++		SceneTree::get_singleton()->process(0);
++
++		CHECK_EQ(0, node->process_counter);
++		CHECK_EQ(1, node->late_process_counter);
+ 		CHECK_EQ(0, node->physics_process_counter);
+ 		CHECK_EQ(0, node->internal_process_counter);
+ 		CHECK_EQ(0, node->internal_physics_process_counter);
+@@ -764,6 +857,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(0, node->process_counter);
++		CHECK_EQ(0, node->late_process_counter);
+ 		CHECK_EQ(1, node->physics_process_counter);
+ 		CHECK_EQ(0, node->internal_process_counter);
+ 		CHECK_EQ(0, node->internal_physics_process_counter);
+@@ -776,11 +870,31 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(1, node->process_counter);
++		CHECK_EQ(0, node->late_process_counter);
+ 		CHECK_EQ(1, node->physics_process_counter);
+ 		CHECK_EQ(0, node->internal_process_counter);
+ 		CHECK_EQ(0, node->internal_physics_process_counter);
+ 	}
+ 
++	SUBCASE("Process and late process") {
++		List<int> notification_order;
++		node->notification_list = &notification_order;
++		node->set_process(true);
++		node->set_process_late(true);
++		SceneTree::get_singleton()->process(0);
++
++		CHECK_EQ(1, node->process_counter);
++		CHECK_EQ(1, node->late_process_counter);
++		CHECK_EQ(0, node->physics_process_counter);
++		CHECK_EQ(0, node->internal_process_counter);
++		CHECK_EQ(0, node->internal_physics_process_counter);
++		REQUIRE_EQ(2, notification_order.size());
++		List<int>::Element *E = notification_order.front();
++		CHECK_EQ(E->get(), Node::NOTIFICATION_PROCESS);
++		E = E->next();
++		CHECK_EQ(E->get(), Node::NOTIFICATION_LATE_PROCESS);
++	}
++
+ 	SUBCASE("Internal, normal and physics process") {
+ 		node->set_process_internal(true);
+ 		node->set_physics_process_internal(true);
+@@ -788,6 +902,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(0, node->process_counter);
++		CHECK_EQ(0, node->late_process_counter);
+ 		CHECK_EQ(0, node->physics_process_counter);
+ 		CHECK_EQ(1, node->internal_process_counter);
+ 		CHECK_EQ(1, node->internal_physics_process_counter);
+@@ -795,6 +910,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 
+ 	SUBCASE("All processing") {
+ 		node->set_process(true);
++		node->set_process_late(true);
+ 		node->set_physics_process(true);
+ 		node->set_process_internal(true);
+ 		node->set_physics_process_internal(true);
+@@ -802,6 +918,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(1, node->process_counter);
++		CHECK_EQ(1, node->late_process_counter);
+ 		CHECK_EQ(1, node->physics_process_counter);
+ 		CHECK_EQ(1, node->internal_process_counter);
+ 		CHECK_EQ(1, node->internal_physics_process_counter);
+@@ -809,6 +926,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 
+ 	SUBCASE("All processing twice") {
+ 		node->set_process(true);
++		node->set_process_late(true);
+ 		node->set_physics_process(true);
+ 		node->set_process_internal(true);
+ 		node->set_physics_process_internal(true);
+@@ -818,6 +936,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(2, node->process_counter);
++		CHECK_EQ(2, node->late_process_counter);
+ 		CHECK_EQ(2, node->physics_process_counter);
+ 		CHECK_EQ(2, node->internal_process_counter);
+ 		CHECK_EQ(2, node->internal_physics_process_counter);
+@@ -825,6 +944,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 
+ 	SUBCASE("Enable and disable processing") {
+ 		node->set_process(true);
++		node->set_process_late(true);
+ 		node->set_physics_process(true);
+ 		node->set_process_internal(true);
+ 		node->set_physics_process_internal(true);
+@@ -832,6 +952,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		node->set_process(false);
++		node->set_process_late(false);
+ 		node->set_physics_process(false);
+ 		node->set_process_internal(false);
+ 		node->set_physics_process_internal(false);
+@@ -839,6 +960,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
+ 		SceneTree::get_singleton()->physics_process(0);
+ 
+ 		CHECK_EQ(1, node->process_counter);
++		CHECK_EQ(1, node->late_process_counter);
+ 		CHECK_EQ(1, node->physics_process_counter);
+ 		CHECK_EQ(1, node->internal_process_counter);
+ 		CHECK_EQ(1, node->internal_physics_process_counter);
+@@ -912,10 +1034,89 @@ TEST_CASE("[SceneTree][Node] Test the process priority") {
+ 		CHECK_EQ(E->get(), node3);
+ 	}
+ 
++	SUBCASE("Late process priority") {
++		node->set_process_late(true);
++		node->set_process_priority(20);
++		node2->set_process_late(true);
++		node2->set_process_priority(10);
++		node3->set_process_late(true);
++		node3->set_process_priority(40);
++		node4->set_process_late(true);
++		node4->set_process_priority(30);
++
++		SceneTree::get_singleton()->process(0);
++
++		CHECK_EQ(4, process_order.size());
++		List<Node *>::Element *E = process_order.front();
++		CHECK_EQ(E->get(), node2);
++		E = E->next();
++		CHECK_EQ(E->get(), node);
++		E = E->next();
++		CHECK_EQ(E->get(), node4);
++		E = E->next();
++		CHECK_EQ(E->get(), node3);
++	}
++
+ 	memdelete(node);
+ 	memdelete(node2);
+ 	memdelete(node3);
+ 	memdelete(node4);
+ }
+ 
++#ifndef _3D_DISABLED
++TEST_CASE("[SceneTree][Node] Late process sees final idle animation and skeleton state") {
++	Node3D *scene = memnew(Node3D);
++	SceneTree::get_singleton()->get_root()->add_child(scene);
++
++	Node3D *animated = memnew(Node3D);
++	animated->set_name("Animated");
++	scene->add_child(animated);
++
++	Skeleton3D *skeleton = memnew(Skeleton3D);
++	skeleton->set_name("Skeleton");
++	const int bone_idx = skeleton->add_bone("root");
++	skeleton->set_bone_rest(bone_idx, Transform3D());
++	skeleton->set_bone_pose_position(bone_idx, Vector3());
++	scene->add_child(skeleton);
++
++	AnimationPlayer *animation_player = memnew(AnimationPlayer);
++	animation_player->set_auto_capture(false);
++	scene->add_child(animation_player);
++
++	Ref<Animation> animation = memnew(Animation);
++	animation->set_length(1.0);
++	const int track_idx = animation->add_track(Animation::TYPE_POSITION_3D);
++	animation->track_set_path(track_idx, NodePath("Animated:position"));
++	animation->position_track_insert_key(track_idx, 0.0, Vector3());
++	animation->position_track_insert_key(track_idx, 1.0, Vector3(4, 0, 0));
++
++	Ref<AnimationLibrary> animation_library = memnew(AnimationLibrary);
++	CHECK_EQ(animation_library->add_animation("move", animation), OK);
++	CHECK_EQ(animation_player->add_animation_library(StringName(), animation_library), OK);
++
++	SkeletonPoseDriver *driver = memnew(SkeletonPoseDriver);
++	driver->skeleton = skeleton;
++	driver->bone_idx = bone_idx;
++	driver->target_pose_position = Vector3(0, 2, 0);
++	driver->set_process(true);
++	scene->add_child(driver);
++
++	LateStateProbe *probe = memnew(LateStateProbe);
++	probe->animated_node = animated;
++	probe->skeleton = skeleton;
++	probe->bone_idx = bone_idx;
++	probe->set_process_late(true);
++	scene->add_child(probe);
++
++	animation_player->play("move");
++	SceneTree::get_singleton()->process(0.5);
++
++	CHECK_EQ(1, probe->late_process_counter);
++	CHECK(probe->animated_position.is_equal_approx(Vector3(2, 0, 0)));
++	CHECK(probe->skeleton_global_pose_position.is_equal_approx(Vector3(0, 2, 0)));
++
++	memdelete(scene);
++}
++#endif
++
+ } // namespace TestNode
+diff --git forkSrcPrefix/doc/classes/Node.xml forkDstPrefix/doc/classes/Node.xml
+index cf5f001ac0cd7d2e208bae543bc98b4ca1fe5d8b..10c2856b17610b48e966b5b79d1b167cf41ec494 100644
+--- forkSrcPrefix/doc/classes/Node.xml
++++ forkDstPrefix/doc/classes/Node.xml
+@@ -9,7 +9,7 @@
+ 		[b]Scene tree:[/b] The [SceneTree] contains the active tree of nodes. When a node is added to the scene tree, it receives the [constant NOTIFICATION_ENTER_TREE] notification and its [method _enter_tree] callback is triggered. Child nodes are always added [i]after[/i] their parent node, i.e. the [method _enter_tree] callback of a parent node will be triggered before its child's.
+ 		Once all nodes have been added in the scene tree, they receive the [constant NOTIFICATION_READY] notification and their respective [method _ready] callbacks are triggered. For groups of nodes, the [method _ready] callback is called in reverse order, starting with the children and moving up to the parent nodes.
+ 		This means that when adding a node to the scene tree, the following order will be used for the callbacks: [method _enter_tree] of the parent, [method _enter_tree] of the children, [method _ready] of the children and finally [method _ready] of the parent (recursively for the entire scene tree).
+-		[b]Processing:[/b] Nodes can override the "process" state, so that they receive a callback on each frame requesting them to process (do something). Normal processing (callback [method _process], toggled with [method set_process]) happens as fast as possible and is dependent on the frame rate, so the processing time [i]delta[/i] (in seconds) is passed as an argument. Physics processing (callback [method _physics_process], toggled with [method set_physics_process]) happens a fixed number of times per second (60 by default) and is useful for code related to the physics engine.
++		[b]Processing:[/b] Nodes can override the "process" state, so that they receive a callback on each frame requesting them to process (do something). Normal processing (callback [method _process], toggled with [method set_process]) happens as fast as possible and is dependent on the frame rate, so the processing time [i]delta[/i] (in seconds) is passed as an argument. Late processing (callback [method _late_process], toggled with [method set_process_late]) runs at the very end of the idle frame, after the normal process step and deferred animation and skeleton updates, but still before rendering. Physics processing (callback [method _physics_process], toggled with [method set_physics_process]) happens a fixed number of times per second (60 by default) and is useful for code related to the physics engine.
+ 		Nodes can also process input events. When present, the [method _input] function will be called for each input that the program receives. In many cases, this can be overkill (unless used for simple projects), and the [method _unhandled_input] function might be preferred; it is called when the input event was not handled by anyone else (typically, GUI [Control] nodes), ensuring that the node only receives the events that were meant for it.
+ 		To keep track of the scene hierarchy (especially when instantiating scenes into other scenes), an "owner" can be set for the node with the [member owner] property. This keeps track of who instantiated what. This is mostly useful when writing editors and tools, though.
+ 		Finally, when a node is freed with [method Object.free] or [method queue_free], it will also free all its children.
+@@ -92,6 +92,20 @@
+ 				[b]Note:[/b] Accumulated [param delta] may diverge from real world seconds.
+ 			</description>
+ 		</method>
++		<method name="_late_process" qualifiers="virtual">
++			<return type="void" />
++			<param index="0" name="delta" type="float" />
++			<description>
++				Called on each idle frame after [method _process] and after deferred animation and skeleton updates have been processed, but still prior to rendering. [param delta] is the time between frames in seconds.
++				It is only called if late processing is enabled for this Node, which is done automatically if this method is overridden, and can be toggled with [method set_process_late].
++				Processing happens in order of [member process_priority], lower priority values are called first. Nodes with the same priority are processed in tree order, or top to bottom as seen in the editor (also known as pre-order traversal).
++				Corresponds to the [constant NOTIFICATION_LATE_PROCESS] notification in [method Object._notification].
++				[b]Note:[/b] This method is only called if the node is present in the scene tree (i.e. if it's not an orphan).
++				[b]Note:[/b] When the engine is struggling and the frame rate is lowered, [param delta] will increase. When [param delta] is increased, it's capped at a maximum of [member Engine.time_scale] * [member Engine.max_physics_steps_per_frame] / [member Engine.physics_ticks_per_second]. As a result, accumulated [param delta] may not represent real world time.
++				[b]Note:[/b] When [code]--fixed-fps[/code] is enabled or the engine is running in Movie Maker mode (see [MovieWriter]), process [param delta] will always be the same for every frame, regardless of how much time the frame took to render.
++				[b]Note:[/b] Frame delta may be post-processed by [member OS.delta_smoothing] if this is enabled for the project.
++			</description>
++		</method>
+ 		<method name="_process" qualifiers="virtual">
+ 			<return type="void" />
+ 			<param index="0" name="delta" type="float" />
+@@ -231,7 +245,7 @@
+ 			<return type="Variant" />
+ 			<param index="0" name="method" type="StringName" />
+ 			<description>
+-				This function is similar to [method Object.call_deferred] except that the call will take place when the node thread group is processed. If the node thread group processes in sub-threads, then the call will be done on that thread, right before [constant NOTIFICATION_PROCESS] or [constant NOTIFICATION_PHYSICS_PROCESS], the [method _process] or [method _physics_process] or their internal versions are called.
++				This function is similar to [method Object.call_deferred] except that the call will take place when the node thread group is processed. If the node thread group processes in sub-threads, then the call will be done on that thread, right before [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], or [constant NOTIFICATION_PHYSICS_PROCESS], the [method _process], [method _late_process], or [method _physics_process] or their internal versions are called.
+ 			</description>
+ 		</method>
+ 		<method name="call_thread_safe" qualifiers="vararg">
+@@ -707,6 +721,12 @@
+ 				Returns [code]true[/code] if processing is enabled (see [method set_process]).
+ 			</description>
+ 		</method>
++		<method name="is_processing_late" qualifiers="const">
++			<return type="bool" />
++			<description>
++				Returns [code]true[/code] if late processing is enabled (see [method set_process_late]).
++			</description>
++		</method>
+ 		<method name="is_processing_input" qualifiers="const">
+ 			<return type="bool" />
+ 			<description>
+@@ -964,7 +984,16 @@
+ 			<description>
+ 				If set to [code]true[/code], enables processing. When a node is being processed, it will receive a [constant NOTIFICATION_PROCESS] on every drawn frame (and the [method _process] callback will be called if it exists).
+ 				[b]Note:[/b] If [method _process] is overridden, this will be automatically enabled before [method _ready] is called.
+-				[b]Note:[/b] This method only affects the [method _process] callback, i.e. it has no effect on other callbacks like [method _physics_process]. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
++				[b]Note:[/b] This method only affects the [method _process] callback, i.e. it has no effect on other callbacks like [method _late_process] or [method _physics_process]. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
++			</description>
++		</method>
++		<method name="set_process_late">
++			<return type="void" />
++			<param index="0" name="enable" type="bool" />
++			<description>
++				If set to [code]true[/code], enables late processing. When a node is being processed late, it will receive a [constant NOTIFICATION_LATE_PROCESS] on every drawn frame after [method _process] and deferred animation and skeleton updates have completed (and the [method _late_process] callback will be called if it exists).
++				[b]Note:[/b] If [method _late_process] is overridden, this will be automatically enabled before [method _ready] is called.
++				[b]Note:[/b] This method only affects the [method _late_process] callback. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
+ 			</description>
+ 		</method>
+ 		<method name="set_process_input">
+@@ -1070,10 +1099,10 @@
+ 			Similar to [member process_priority] but for [constant NOTIFICATION_PHYSICS_PROCESS], [method _physics_process], or [constant NOTIFICATION_INTERNAL_PHYSICS_PROCESS].
+ 		</member>
+ 		<member name="process_priority" type="int" setter="set_process_priority" getter="get_process_priority" default="0">
+-			The node's execution order of the process callbacks ([method _process], [constant NOTIFICATION_PROCESS], and [constant NOTIFICATION_INTERNAL_PROCESS]). Nodes whose priority value is [i]lower[/i] call their process callbacks first, regardless of tree order.
++			The node's execution order of the process callbacks ([method _process], [method _late_process], [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], and [constant NOTIFICATION_INTERNAL_PROCESS]). Nodes whose priority value is [i]lower[/i] call their process callbacks first, regardless of tree order.
+ 		</member>
+ 		<member name="process_thread_group" type="int" setter="set_process_thread_group" getter="get_process_thread_group" enum="Node.ProcessThreadGroup" default="0">
+-			Set the process thread group for this node (basically, whether it receives [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_PHYSICS_PROCESS], [method _process] or [method _physics_process] (and the internal versions) on the main thread or in a sub-thread.
++			Set the process thread group for this node (basically, whether it receives [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], [constant NOTIFICATION_PHYSICS_PROCESS], [method _process], [method _late_process], or [method _physics_process] (and the internal versions) on the main thread or in a sub-thread.
+ 			By default, the thread group is [constant PROCESS_THREAD_GROUP_INHERIT], which means that this node belongs to the same thread group as the parent node. The thread groups means that nodes in a specific thread group will process together, separate to other thread groups (depending on [member process_thread_group_order]). If the value is set is [constant PROCESS_THREAD_GROUP_SUB_THREAD], this thread group will occur on a sub thread (not the main thread), otherwise if set to [constant PROCESS_THREAD_GROUP_MAIN_THREAD] it will process on the main thread. If there is not a parent or grandparent node set to something other than inherit, the node will belong to the [i]default thread group[/i]. This default group will process on the main thread and its group order is 0.
+ 			During processing in a sub-thread, accessing most functions in nodes outside the thread group is forbidden (and it will result in an error in debug mode). Use [method Object.call_deferred], [method call_thread_safe], [method call_deferred_thread_group] and the likes in order to communicate from the thread groups to the main thread (or to other thread groups).
+ 			To better understand process thread groups, the idea is that any node set to any other value than [constant PROCESS_THREAD_GROUP_INHERIT] will include any child (and grandchild) nodes set to inherit into its process thread group. This means that the processing of all the nodes in the group will happen together, at the same time as the node including them.
+@@ -1227,6 +1256,9 @@
+ 		<constant name="NOTIFICATION_ENABLED" value="29">
+ 			Notification received when the node is enabled again after being disabled. See [constant PROCESS_MODE_DISABLED].
+ 		</constant>
++		<constant name="NOTIFICATION_LATE_PROCESS" value="30">
++			Notification received from the tree every rendered frame when [method is_processing_late] returns [code]true[/code]. See [method _late_process].
++		</constant>
+ 		<constant name="NOTIFICATION_RESET_PHYSICS_INTERPOLATION" value="2001">
+ 			Notification received when [method reset_physics_interpolation] is called on the node or its ancestors.
+ 		</constant>
+diff --git forkSrcPrefix/scene/main/node.cpp forkDstPrefix/scene/main/node.cpp
+index c2b20d798fd0a6fa1aa75fc1a081e3024667e58a..511978d36809053ffa2551852f4d9a59e391365d 100644
+--- forkSrcPrefix/scene/main/node.cpp
++++ forkDstPrefix/scene/main/node.cpp
+@@ -100,6 +100,10 @@ void Node::_notification(int p_notification) {
+ 			GDVIRTUAL_CALL(_process, get_process_delta_time());
+ 		} break;
+ 
++		case NOTIFICATION_LATE_PROCESS: {
++			GDVIRTUAL_CALL(_late_process, get_process_delta_time());
++		} break;
++
+ 		case NOTIFICATION_PHYSICS_PROCESS: {
+ 			GDVIRTUAL_CALL(_physics_process, get_physics_process_delta_time());
+ 		} break;
+@@ -274,6 +278,9 @@ void Node::_notification(int p_notification) {
+ 			if (GDVIRTUAL_IS_OVERRIDDEN(_process)) {
+ 				set_process(true);
+ 			}
++			if (GDVIRTUAL_IS_OVERRIDDEN(_late_process)) {
++				set_process_late(true);
++			}
+ 			if (GDVIRTUAL_IS_OVERRIDDEN(_physics_process)) {
+ 				set_physics_process(true);
+ 			}
+@@ -897,6 +904,8 @@ bool Node::can_process_notification(int p_what) const {
+ 			return data.physics_process;
+ 		case NOTIFICATION_PROCESS:
+ 			return data.process;
++		case NOTIFICATION_LATE_PROCESS:
++			return data.process_late;
+ 		case NOTIFICATION_INTERNAL_PROCESS:
+ 			return data.process_internal;
+ 		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS:
+@@ -1050,6 +1059,32 @@ bool Node::is_processing() const {
+ 	return data.process;
+ }
+ 
++void Node::set_process_late(bool p_process_late) {
++	ERR_THREAD_GUARD
++	if (data.process_late == p_process_late) {
++		return;
++	}
++
++	if (!is_inside_tree()) {
++		data.process_late = p_process_late;
++		return;
++	}
++
++	if (_is_any_processing()) {
++		_remove_from_process_thread_group();
++	}
++
++	data.process_late = p_process_late;
++
++	if (_is_any_processing()) {
++		_add_to_process_thread_group();
++	}
++}
++
++bool Node::is_processing_late() const {
++	return data.process_late;
++}
++
+ void Node::set_process_internal(bool p_process_internal) {
+ 	ERR_THREAD_GUARD
+ 	if (data.process_internal == p_process_internal) {
+@@ -3799,11 +3834,13 @@ void Node::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("is_physics_processing"), &Node::is_physics_processing);
+ 	ClassDB::bind_method(D_METHOD("get_process_delta_time"), &Node::get_process_delta_time);
+ 	ClassDB::bind_method(D_METHOD("set_process", "enable"), &Node::set_process);
++	ClassDB::bind_method(D_METHOD("set_process_late", "enable"), &Node::set_process_late);
+ 	ClassDB::bind_method(D_METHOD("set_process_priority", "priority"), &Node::set_process_priority);
+ 	ClassDB::bind_method(D_METHOD("get_process_priority"), &Node::get_process_priority);
+ 	ClassDB::bind_method(D_METHOD("set_physics_process_priority", "priority"), &Node::set_physics_process_priority);
+ 	ClassDB::bind_method(D_METHOD("get_physics_process_priority"), &Node::get_physics_process_priority);
+ 	ClassDB::bind_method(D_METHOD("is_processing"), &Node::is_processing);
++	ClassDB::bind_method(D_METHOD("is_processing_late"), &Node::is_processing_late);
+ 	ClassDB::bind_method(D_METHOD("set_process_input", "enable"), &Node::set_process_input);
+ 	ClassDB::bind_method(D_METHOD("is_processing_input"), &Node::is_processing_input);
+ 	ClassDB::bind_method(D_METHOD("set_process_shortcut_input", "enable"), &Node::set_process_shortcut_input);
+@@ -3951,6 +3988,7 @@ void Node::_bind_methods() {
+ 	BIND_CONSTANT(NOTIFICATION_POST_ENTER_TREE);
+ 	BIND_CONSTANT(NOTIFICATION_DISABLED);
+ 	BIND_CONSTANT(NOTIFICATION_ENABLED);
++	BIND_CONSTANT(NOTIFICATION_LATE_PROCESS);
+ 	BIND_CONSTANT(NOTIFICATION_RESET_PHYSICS_INTERPOLATION);
+ 
+ 	BIND_CONSTANT(NOTIFICATION_EDITOR_PRE_SAVE);
+@@ -4056,6 +4094,7 @@ void Node::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "editor_description", PROPERTY_HINT_MULTILINE_TEXT), "set_editor_description", "get_editor_description");
+ 
+ 	GDVIRTUAL_BIND(_process, "delta");
++	GDVIRTUAL_BIND(_late_process, "delta");
+ 	GDVIRTUAL_BIND(_physics_process, "delta");
+ 	GDVIRTUAL_BIND(_enter_tree);
+ 	GDVIRTUAL_BIND(_exit_tree);
+@@ -4095,6 +4134,7 @@ Node::Node() {
+ 
+ 	data.physics_process = false;
+ 	data.process = false;
++	data.process_late = false;
+ 
+ 	data.physics_process_internal = false;
+ 	data.process_internal = false;
+diff --git forkSrcPrefix/scene/main/node.h forkDstPrefix/scene/main/node.h
+index 1ebbe9e23aa3f3f70c539a198c7e8d793e94d752..56af4080d77d2d42c6c64c15ae15c4aa4d53ac03 100644
+--- forkSrcPrefix/scene/main/node.h
++++ forkDstPrefix/scene/main/node.h
+@@ -249,6 +249,7 @@ private:
+ 
+ 		bool physics_process : 1;
+ 		bool process : 1;
++		bool process_late : 1;
+ 
+ 		bool physics_process_internal : 1;
+ 		bool process_internal : 1;
+@@ -431,6 +432,7 @@ protected:
+ 	virtual void unhandled_key_input(const Ref<InputEvent> &p_key_event);
+ 
+ 	GDVIRTUAL1(_process, double)
++	GDVIRTUAL1(_late_process, double)
+ 	GDVIRTUAL1(_physics_process, double)
+ 	GDVIRTUAL0(_enter_tree)
+ 	GDVIRTUAL0(_exit_tree)
+@@ -474,6 +476,7 @@ public:
+ 		NOTIFICATION_POST_ENTER_TREE = 27,
+ 		NOTIFICATION_DISABLED = 28,
+ 		NOTIFICATION_ENABLED = 29,
++		NOTIFICATION_LATE_PROCESS = 30,
+ 		NOTIFICATION_RESET_PHYSICS_INTERPOLATION = 2001, // A GodotSpace Odyssey.
+ 		// Keep these linked to Node.
+ 
+@@ -661,6 +664,9 @@ public:
+ 	double get_process_delta_time() const;
+ 	bool is_processing() const;
+ 
++	void set_process_late(bool p_process_late);
++	bool is_processing_late() const;
++
+ 	void set_physics_process_internal(bool p_process_internal);
+ 	bool is_physics_processing_internal() const;
+ 
+@@ -689,7 +695,7 @@ public:
+ 	bool is_processing_unhandled_key_input() const;
+ 
+ 	_FORCE_INLINE_ bool _is_any_processing() const {
+-		return data.process || data.process_internal || data.physics_process || data.physics_process_internal;
++		return data.process || data.process_late || data.process_internal || data.physics_process || data.physics_process_internal;
+ 	}
+ 	_FORCE_INLINE_ bool is_accessible_from_caller_thread() const {
+ 		if (current_process_thread_group == nullptr) {
+diff --git forkSrcPrefix/scene/main/scene_tree.cpp forkDstPrefix/scene/main/scene_tree.cpp
+index 6a895267c2939a515916d94fc387bcf25be38875..8be53fe42ba85a746f8893ebdc5f620baab001fc 100644
+--- forkSrcPrefix/scene/main/scene_tree.cpp
++++ forkDstPrefix/scene/main/scene_tree.cpp
+@@ -778,6 +778,9 @@ bool SceneTree::process(double p_time) {
+ #endif // _3D_DISABLED
+ #endif // TOOLS_ENABLED
+ 
++	_process_late();
++	flush_transform_notifications();
++
+ 	// Second pass of scene tree fixed timestep interpolation.
+ 	// ToDo: Possibly needs another flush_transform_notifications here
+ 	// depending on whether there are side effects to _call_idle_callbacks().
+@@ -1234,12 +1237,56 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
+ 	p_group->call_queue.flush(); // Flush messages also after processing (for potential deferred calls).
+ }
+ 
++void SceneTree::_process_group_late(ProcessGroup *p_group) {
++	// Late processing is the terminal node callback phase for the frame.
++	// Flush messages queued earlier in the frame before callbacks run, but do not
++	// flush again afterwards so deferred work scheduled from late processing lands next frame.
++	p_group->call_queue.flush();
++
++	Vector<Node *> &nodes = p_group->late_nodes;
++	if (nodes.is_empty()) {
++		return;
++	}
++
++	if (p_group->late_node_order_dirty) {
++		nodes.sort_custom<Node::ComparatorWithPriority>();
++		p_group->late_node_order_dirty = false;
++	}
++
++	Vector<Node *> nodes_copy = nodes;
++
++	uint32_t node_count = nodes_copy.size();
++	Node **nodes_ptr = (Node **)nodes_copy.ptr();
++
++	for (uint32_t i = 0; i < node_count; i++) {
++		Node *n = nodes_ptr[i];
++		if (nodes_removed_on_group_call.has(n)) {
++			continue;
++		}
++
++		if (!n->can_process() || !n->is_inside_tree()) {
++			continue;
++		}
++
++		if (n->is_processing_late()) {
++			n->notification(Node::NOTIFICATION_LATE_PROCESS);
++		}
++	}
++}
++
+ void SceneTree::_process_groups_thread(uint32_t p_index, bool p_physics) {
+ 	Node::current_process_thread_group = local_process_group_cache[p_index]->owner;
+ 	_process_group(local_process_group_cache[p_index], p_physics);
+ 	Node::current_process_thread_group = nullptr;
+ }
+ 
++void SceneTree::_process_groups_thread_late(uint32_t p_index, bool p_unused) {
++	(void)p_unused;
++	Node::current_process_thread_group = local_process_group_cache[p_index]->owner;
++	_process_group_late(local_process_group_cache[p_index]);
++	Node::current_process_thread_group = nullptr;
++}
++
+ void SceneTree::_process(bool p_physics) {
+ 	if (process_groups_dirty) {
+ 		{
+@@ -1358,6 +1405,97 @@ void SceneTree::_process(bool p_physics) {
+ 	}
+ }
+ 
++void SceneTree::_process_late() {
++	if (process_groups_dirty) {
++		{
++			ProcessGroup **pg_ptr = (ProcessGroup **)process_groups.ptr();
++			uint32_t pg_count = process_groups.size();
++
++			for (uint32_t i = 0; i < pg_count; i++) {
++				if (pg_ptr[i]->removed) {
++					pg_ptr[i] = pg_ptr[pg_count - 1];
++					i--;
++					pg_count--;
++				}
++			}
++			if (pg_count != process_groups.size()) {
++				process_groups.resize(pg_count);
++			}
++		}
++		{
++			process_groups.sort_custom<ProcessGroupSort>();
++		}
++
++		process_groups_dirty = false;
++	}
++
++	uint32_t group_count = process_groups.size();
++
++	if (group_count == 0) {
++		return;
++	}
++
++	process_last_pass++;
++	uint32_t from = 0;
++	uint32_t process_count = 0;
++	nodes_removed_on_group_call_lock++;
++
++	int current_order = process_groups[0]->owner ? process_groups[0]->owner->data.process_thread_group_order : 0;
++	bool current_threaded = process_groups[0]->owner ? process_groups[0]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD : false;
++
++	for (uint32_t i = 0; i <= group_count; i++) {
++		int order = i < group_count && process_groups[i]->owner ? process_groups[i]->owner->data.process_thread_group_order : 0;
++		bool threaded = i < group_count && process_groups[i]->owner ? process_groups[i]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD : false;
++
++		if (i == group_count || current_order != order || current_threaded != threaded) {
++			if (process_count > 0) {
++				bool using_threads = process_groups[from]->owner && process_groups[from]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD && !node_threading_disabled;
++
++				if (using_threads) {
++					local_process_group_cache.clear();
++				}
++				for (uint32_t j = from; j < i; j++) {
++					if (process_groups[j]->last_pass == process_last_pass) {
++						if (using_threads) {
++							local_process_group_cache.push_back(process_groups[j]);
++						} else {
++							_process_group_late(process_groups[j]);
++						}
++					}
++				}
++
++				if (using_threads) {
++					WorkerThreadPool::GroupID id = WorkerThreadPool::get_singleton()->add_template_group_task(this, &SceneTree::_process_groups_thread_late, false, local_process_group_cache.size(), -1, true);
++					WorkerThreadPool::get_singleton()->wait_for_group_task_completion(id);
++				}
++			}
++
++			if (i == group_count) {
++				break;
++			}
++
++			from = i;
++			current_threaded = threaded;
++			current_order = order;
++		}
++
++		if (process_groups[i]->removed) {
++			continue;
++		}
++
++		ProcessGroup *pg = process_groups[i];
++		if (!pg->late_nodes.is_empty()) {
++			pg->last_pass = process_last_pass;
++			process_count++;
++		}
++	}
++
++	nodes_removed_on_group_call_lock--;
++	if (nodes_removed_on_group_call_lock == 0) {
++		nodes_removed_on_group_call.clear();
++	}
++}
++
+ bool SceneTree::ProcessGroupSort::operator()(const ProcessGroup *p_left, const ProcessGroup *p_right) const {
+ 	int left_order = p_left->owner ? p_left->owner->data.process_thread_group_order : 0;
+ 	int right_order = p_right->owner ? p_right->owner->data.process_thread_group_order : 0;
+@@ -1409,6 +1547,11 @@ void SceneTree::_remove_node_from_process_group(Node *p_node, Node *p_owner) {
+ 		bool found = pg->physics_nodes.erase(p_node);
+ 		ERR_FAIL_COND(!found);
+ 	}
++
++	if (p_node->is_processing_late()) {
++		bool found = pg->late_nodes.erase(p_node);
++		ERR_FAIL_COND(!found);
++	}
+ }
+ 
+ void SceneTree::_add_node_to_process_group(Node *p_node, Node *p_owner) {
+@@ -1424,6 +1567,11 @@ void SceneTree::_add_node_to_process_group(Node *p_node, Node *p_owner) {
+ 		pg->physics_nodes.push_back(p_node);
+ 		pg->physics_node_order_dirty = true;
+ 	}
++
++	if (p_node->is_processing_late()) {
++		pg->late_nodes.push_back(p_node);
++		pg->late_node_order_dirty = true;
++	}
+ }
+ 
+ void SceneTree::_call_input_pause(const StringName &p_group, CallInputType p_call_type, const Ref<InputEvent> &p_input, Viewport *p_viewport) {
+diff --git forkSrcPrefix/scene/main/scene_tree.h forkDstPrefix/scene/main/scene_tree.h
+index b7098290b411e8828763956f2b46794c048edfab..f5c5c463a89650d7b277e52ca3d01251e0d05c70 100644
+--- forkSrcPrefix/scene/main/scene_tree.h
++++ forkDstPrefix/scene/main/scene_tree.h
+@@ -100,8 +100,10 @@ private:
+ 	struct ProcessGroup {
+ 		CallQueue call_queue;
+ 		Vector<Node *> nodes;
++		Vector<Node *> late_nodes;
+ 		Vector<Node *> physics_nodes;
+ 		bool node_order_dirty = true;
++		bool late_node_order_dirty = true;
+ 		bool physics_node_order_dirty = true;
+ 		bool removed = false;
+ 		Node *owner = nullptr;
+@@ -238,8 +240,11 @@ private:
+ 	void remove_from_group(const StringName &p_group, Node *p_node);
+ 
+ 	void _process_group(ProcessGroup *p_group, bool p_physics);
++	void _process_group_late(ProcessGroup *p_group);
+ 	void _process_groups_thread(uint32_t p_index, bool p_physics);
++	void _process_groups_thread_late(uint32_t p_index, bool p_unused);
+ 	void _process(bool p_physics);
++	void _process_late();
+ 
+ 	void _remove_process_group(Node *p_node);
+ 	void _add_process_group(Node *p_node);
