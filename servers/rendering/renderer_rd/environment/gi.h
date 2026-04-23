@@ -381,6 +381,8 @@ private:
 			float bounce_feedback;
 			float y_mult;
 			uint32_t use_occlusion;
+
+			float camera_inv_transform[12];
 		};
 
 		enum {
@@ -680,6 +682,7 @@ public:
 		RSE::EnvironmentSDFGIYScale y_scale_mode = RSE::ENV_SDFGI_Y_SCALE_75_PERCENT;
 
 		float y_mult = 1.0;
+		float direct_light_camera_inv_transform[12] = {};
 
 		uint32_t version = 0;
 		uint32_t render_pass = 0;
@@ -702,7 +705,7 @@ public:
 		void debug_draw(uint32_t p_view_count, const Projection *p_projections, const Transform3D &p_transform, int p_width, int p_height, RID p_render_target, RID p_texture, const Vector<RID> &p_texture_views);
 		void debug_probes(RID p_framebuffer, const uint32_t p_view_count, const Projection *p_camera_with_transforms);
 
-		void pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
+		bool pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
 		void render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_region, const PagedArray<RenderGeometryInstance *> &p_instances, float p_exposure_normalization);
 		void render_static_lights(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, uint32_t p_cascade_count, const uint32_t *p_cascade_indices, const PagedArray<RID> *p_positional_light_cull_result);
 	};

@@ -1722,8 +1722,21 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool ce_needs_normal_roughness = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_ROUGHNESS);
 	bool ce_needs_separate_specular = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_SEPARATE_SPECULAR);
 
+	Ref<RendererRD::GI::SDFGI> sdfgi;
+	bool sdfgi_pre_processed = false;
+	bool has_sdfgi = rb->has_custom_data(RB_SCOPE_SDFGI);
+	if (has_sdfgi) {
+		sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+		if (sdfgi.is_valid()) {
+			sdfgi->update_cascades();
+			sdfgi_pre_processed = sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
+		}
+	}
+
 	// sdfgi first
-	_update_sdfgi(p_render_data);
+	if (!has_sdfgi || sdfgi_pre_processed) {
+		_update_sdfgi(p_render_data);
+	}
 
 	// assign render indices to voxel_gi_instances
 	for (uint32_t i = 0; i < (uint32_t)p_render_data->voxel_gi_instances->size(); i++) {
@@ -1743,13 +1756,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		p_render_data->voxel_gi_count = 0;
 
-		if (rb->has_custom_data(RB_SCOPE_SDFGI)) {
-			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
-			if (sdfgi.is_valid()) {
-				sdfgi->update_cascades();
-				sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
-				sdfgi->update_light();
-			}
+		if (sdfgi_pre_processed) {
+			sdfgi->update_light();
 		}
 
 		gi.setup_voxel_gi_instances(p_render_data, p_render_data->render_buffers, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances, p_render_data->voxel_gi_count);

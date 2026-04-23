@@ -249,6 +249,7 @@ private:
 
 		bool physics_process : 1;
 		bool process : 1;
+		bool process_late : 1;
 
 		bool physics_process_internal : 1;
 		bool process_internal : 1;
@@ -431,6 +432,7 @@ protected:
 	virtual void unhandled_key_input(const Ref<InputEvent> &p_key_event);
 
 	GDVIRTUAL1(_process, double)
+	GDVIRTUAL1(_late_process, double)
 	GDVIRTUAL1(_physics_process, double)
 	GDVIRTUAL0(_enter_tree)
 	GDVIRTUAL0(_exit_tree)
@@ -474,6 +476,7 @@ public:
 		NOTIFICATION_POST_ENTER_TREE = 27,
 		NOTIFICATION_DISABLED = 28,
 		NOTIFICATION_ENABLED = 29,
+		NOTIFICATION_LATE_PROCESS = 30,
 		NOTIFICATION_RESET_PHYSICS_INTERPOLATION = 2001, // A GodotSpace Odyssey.
 		// Keep these linked to Node.
 
@@ -661,6 +664,9 @@ public:
 	double get_process_delta_time() const;
 	bool is_processing() const;
 
+	void set_process_late(bool p_process_late);
+	bool is_processing_late() const;
+
 	void set_physics_process_internal(bool p_process_internal);
 	bool is_physics_processing_internal() const;
 
@@ -689,7 +695,7 @@ public:
 	bool is_processing_unhandled_key_input() const;
 
 	_FORCE_INLINE_ bool _is_any_processing() const {
-		return data.process || data.process_internal || data.physics_process || data.physics_process_internal;
+		return data.process || data.process_late || data.process_internal || data.physics_process || data.physics_process_internal;
 	}
 	_FORCE_INLINE_ bool is_accessible_from_caller_thread() const {
 		if (current_process_thread_group == nullptr) {

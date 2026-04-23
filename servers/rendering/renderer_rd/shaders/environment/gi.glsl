@@ -401,7 +401,8 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 			float softness = 0.2 + min(1.0, roughness * 5.0) * 4.0; //approximation to roughness so it does not seem like a hard fade
 			uint i = 0;
 			bool found = false;
-			while (true) {
+			const uint MAX_REFLECTION_MARCH_STEPS = 256;
+			for (uint iteration_count = 0; iteration_count < MAX_REFLECTION_MARCH_STEPS; iteration_count++) {
 				if (length(ray_pos) >= max_distance || light_accum.a > 0.99) {
 					break;
 				}
@@ -423,6 +424,7 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 					}
 
 					fdistance /= sdfgi.cascades[i].to_cell;
+					float min_step = 0.05 / sdfgi.cascades[i].to_cell;
 
 					if (i < (sdfgi.max_cascades - 1)) {
 						pos = ray_pos - sdfgi.cascades[next_i].position;
@@ -442,10 +444,17 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
 						float blend = clamp((length(ray_pos) - prev_radius) / (radius_sizes[i] - prev_radius), 0.0, 1.0);
 
 						fdistance2 /= sdfgi.cascades[next_i].to_cell;
+						min_step = min(min_step, 0.05 / sdfgi.cascades[next_i].to_cell);
 
 						hit_light = mix(hit_light, hit_light2, blend);
 						fdistance = mix(fdistance, fdistance2, blend);
 					}
+
+					if (isnan(fdistance) || isinf(fdistance)) {
+						break;
+					}
+
+					fdistance = max(fdistance, min_step);
 
 					light_accum += hit_light;
 					ray_pos += ray_dir * fdistance;
@@ -606,14 +615,24 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	out_blend += blend;
 }
 
-vec4 fetch_normal_and_roughness(ivec2 pos) {
-	vec4 normal_roughness = texelFetch(sampler2D(normal_roughness_buffer, linear_sampler), pos, 0);
+vec4 fetch_raw_normal_and_roughness(ivec2 pos) {
+	return texelFetch(sampler2D(normal_roughness_buffer, linear_sampler), pos, 0);
+}
+
+vec4 decode_normal_and_roughness(vec4 normal_roughness) {
 	normal_roughness.xyz = normalize(normal_roughness.xyz * 2.0 - 1.0);
 	return normal_roughness;
 }
 
 void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 reflection_light) {
-	vec4 normal_roughness = fetch_normal_and_roughness(pos);
+	vec4 raw_normal_roughness = fetch_raw_normal_and_roughness(pos);
+
+	// The depth pre-pass clears the normal/roughness attachment to zero for background pixels.
+	if (all(equal(raw_normal_roughness, vec4(0.0)))) {
+		return;
+	}
+
+	vec4 normal_roughness = decode_normal_and_roughness(raw_normal_roughness);
 
 	vec3 normal = normal_roughness.xyz;
 
