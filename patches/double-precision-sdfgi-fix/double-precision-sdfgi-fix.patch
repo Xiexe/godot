@@ -1,23 +1,18 @@
-diff --git forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.cpp forkDstPrefix/servers/rendering/renderer_rd/environment/gi.cpp
-index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc2590c553d7d 100644
---- forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.cpp
-+++ forkDstPrefix/servers/rendering/renderer_rd/environment/gi.cpp
-@@ -1247,6 +1247,14 @@ void GI::SDFGI::update(RID p_env, const Vector3 &p_world_position) {
+diff --git a/servers/rendering/renderer_rd/environment/gi.cpp b/servers/rendering/renderer_rd/environment/gi.cpp
+index e6534cdacc..cc5472aca5 100644
+--- a/servers/rendering/renderer_rd/environment/gi.cpp
++++ b/servers/rendering/renderer_rd/environment/gi.cpp
+@@ -1247,6 +1247,9 @@ void GI::SDFGI::update(RID p_env, const Vector3 &p_world_position) {
  }
  
  void GI::SDFGI::update_light() {
-+	for (uint32_t i = 0; i < cascades.size(); i++) {
-+		const SDFGI::Cascade &cascade = cascades[i];
-+		if (!cascade.sdf_direct_light_dynamic_render_uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(cascade.sdf_direct_light_dynamic_render_uniform_set)) {
-+			ERR_PRINT_ONCE("SDFGI dynamic light update skipped because the render uniform set is missing.");
-+			return;
-+		}
-+	}
++	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
++	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 +
  	RD::get_singleton()->draw_command_begin_label("SDFGI Update Dynamic Light");
  
  	for (uint32_t i = 0; i < cascades.size(); i++) {
-@@ -1268,6 +1276,9 @@ void GI::SDFGI::update_light() {
+@@ -1268,15 +1271,32 @@ void GI::SDFGI::update_light() {
  	push_constant.bounce_feedback = bounce_feedback;
  	push_constant.y_mult = y_mult;
  	push_constant.use_occlusion = uses_occlusion;
@@ -25,21 +20,47 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
 +		push_constant.camera_inv_transform[i] = direct_light_camera_inv_transform[i];
 +	}
  
- 	for (uint32_t i = 0; i < cascades.size(); i++) {
- 		SDFGI::Cascade &cascade = cascades[i];
-@@ -1812,9 +1823,9 @@ void GI::SDFGI::debug_probes(RID p_framebuffer, const uint32_t p_view_count, con
- 	RD::get_singleton()->draw_list_end();
- }
+-	RID area_light_atlas_dynamic_uniform_set;
++	RID direct_light_dynamic_render_uniform_set;
+ 	{
+-		RD::Uniform u;
+-		u.binding = 0;
+-		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+-		u.append_id(RendererRD::TextureStorage::get_singleton()->area_light_atlas_get_texture());
++		RD::Uniform area_light_atlas_uniform;
++		area_light_atlas_uniform.binding = 0;
++		area_light_atlas_uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
++		area_light_atlas_uniform.append_id(texture_storage->area_light_atlas_get_texture());
++
++		RD::Uniform directional_shadow_uniform;
++		directional_shadow_uniform.binding = 1;
++		directional_shadow_uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
++		if (light_storage->directional_shadow_get_texture().is_valid()) {
++			directional_shadow_uniform.append_id(light_storage->directional_shadow_get_texture());
++		} else {
++			directional_shadow_uniform.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_DEPTH));
++		}
  
--void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data) {
-+bool GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data) {
- 	if (p_render_data->sdfgi_update_data == nullptr) {
--		return;
-+		return false;
+-		area_light_atlas_dynamic_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_DYNAMIC), 1, u);
++		RD::Uniform directional_light_buffer_uniform;
++		directional_light_buffer_uniform.binding = 2;
++		directional_light_buffer_uniform.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
++		directional_light_buffer_uniform.append_id(light_storage->get_directional_light_buffer());
++
++		direct_light_dynamic_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_DYNAMIC), 1, area_light_atlas_uniform, directional_shadow_uniform, directional_light_buffer_uniform);
  	}
  
- 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
-@@ -1893,6 +1904,7 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+ 	for (uint32_t i = 0; i < cascades.size(); i++) {
+@@ -1300,7 +1320,7 @@ void GI::SDFGI::update_light() {
+ 		cascades[i].all_dynamic_lights_dirty = false;
+ 
+ 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cascade.sdf_direct_light_dynamic_uniform_set, 0);
+-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, area_light_atlas_dynamic_uniform_set, 1);
++		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, direct_light_dynamic_render_uniform_set, 1);
+ 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push_constant, sizeof(SDFGIShader::DirectLightPushConstant));
+ 		RD::get_singleton()->compute_list_dispatch_indirect(compute_list, cascade.solid_cell_dispatch_buffer_call, 0);
+ 	}
+@@ -1903,6 +1923,7 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
  	}
  
  	RD::get_singleton()->buffer_update(gi->sdfgi_ubo, 0, sizeof(SDFGIData), &sdfgi_data);
@@ -47,7 +68,7 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  
  	/* Update dynamic lights in SDFGI cascades */
  
-@@ -1901,10 +1913,14 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+@@ -1911,10 +1932,14 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
  
  		SDFGIShader::Light lights[SDFGI::MAX_DYNAMIC_LIGHTS];
  		uint32_t idx = 0;
@@ -62,7 +83,7 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  
  			RID light_instance = p_render_data->sdfgi_update_data->directional_lights->get(j);
  			ERR_CONTINUE(!light_storage->owns_light_instance(light_instance));
-@@ -1938,6 +1954,9 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+@@ -1948,6 +1973,9 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
  			}
  
  			lights[idx].has_shadow = RSG::light_storage->light_has_shadow(light);
@@ -72,41 +93,7 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  
  			idx++;
  		}
-@@ -2055,9 +2074,33 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
- 			u.append_id(texture_storage->area_light_atlas_get_texture());
- 			uniforms.push_back(u);
- 		}
-+		{
-+			RD::Uniform u;
-+			u.binding = 1;
-+			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-+			if (light_storage->directional_shadow_get_texture().is_valid()) {
-+				u.append_id(light_storage->directional_shadow_get_texture());
-+			} else {
-+				u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE));
-+			}
-+			uniforms.push_back(u);
-+		}
-+		{
-+			RD::Uniform u;
-+			u.binding = 2;
-+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
-+			u.append_id(light_storage->get_directional_light_buffer());
-+			uniforms.push_back(u);
-+		}
- 		cascade.sdf_direct_light_static_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_STATIC), 1, uniforms);
- 		cascade.sdf_direct_light_dynamic_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_DYNAMIC), 1, uniforms);
-+		if (!cascade.sdf_direct_light_static_render_uniform_set.is_valid() || !cascade.sdf_direct_light_dynamic_render_uniform_set.is_valid()) {
-+			ERR_PRINT_ONCE("SDFGI direct light render uniform set creation failed.");
-+			return false;
-+		}
- 	}
-+
-+	return true;
- }
- 
- void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_region, const PagedArray<RenderGeometryInstance *> &p_instances, float p_exposure_normalization) {
-@@ -2469,13 +2512,12 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
+@@ -2467,13 +2495,12 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
  				}
  
  				lights[idx].type = RSG::light_storage->light_get_type(light);
@@ -123,7 +110,7 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  				lights[idx].direction[0] = dir.x;
  				lights[idx].direction[1] = dir.y;
  				lights[idx].direction[2] = dir.z;
-@@ -2575,6 +2617,7 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
+@@ -2573,19 +2600,34 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
  	dl_push_constant.bounce_feedback = 0.0; // this is static light, do not multibounce yet
  	dl_push_constant.y_mult = y_mult;
  	dl_push_constant.use_occlusion = uses_occlusion;
@@ -131,19 +118,49 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  
  	//all must be processed
  	dl_push_constant.process_offset = 0;
-@@ -2589,6 +2632,11 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
- 		dl_push_constant.cascade = p_cascade_indices[i];
+ 	dl_push_constant.process_increment = 1;
+ 
+-	RID area_light_atlas_static_uniform_set;
++	RID direct_light_static_render_uniform_set;
+ 	{
+-		RD::Uniform u;
+-		u.binding = 0;
+-		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+-		u.append_id(texture_storage->area_light_atlas_get_texture());
++		RD::Uniform area_light_atlas_uniform;
++		area_light_atlas_uniform.binding = 0;
++		area_light_atlas_uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
++		area_light_atlas_uniform.append_id(texture_storage->area_light_atlas_get_texture());
++
++		RD::Uniform directional_shadow_uniform;
++		directional_shadow_uniform.binding = 1;
++		directional_shadow_uniform.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
++		if (light_storage->directional_shadow_get_texture().is_valid()) {
++			directional_shadow_uniform.append_id(light_storage->directional_shadow_get_texture());
++		} else {
++			directional_shadow_uniform.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_DEPTH));
++		}
++
++		RD::Uniform directional_light_buffer_uniform;
++		directional_light_buffer_uniform.binding = 2;
++		directional_light_buffer_uniform.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
++		directional_light_buffer_uniform.append_id(light_storage->get_directional_light_buffer());
+ 
+-		area_light_atlas_static_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_STATIC), 1, u);
++		direct_light_static_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_STATIC), 1, area_light_atlas_uniform, directional_shadow_uniform, directional_light_buffer_uniform);
+ 	}
+ 
+ 	for (uint32_t i = 0; i < p_cascade_count; i++) {
+@@ -2598,7 +2640,7 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
  
  		if (dl_push_constant.light_count > 0) {
-+			if (!cc.sdf_direct_light_static_render_uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(cc.sdf_direct_light_static_render_uniform_set)) {
-+				ERR_PRINT_ONCE("SDFGI static light update skipped because the render uniform set is missing.");
-+				continue;
-+			}
-+
  			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cc.sdf_direct_light_static_uniform_set, 0);
- 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cc.sdf_direct_light_static_render_uniform_set, 1);
+-			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, area_light_atlas_static_uniform_set, 1);
++			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, direct_light_static_render_uniform_set, 1);
  			RD::get_singleton()->compute_list_set_push_constant(compute_list, &dl_push_constant, sizeof(SDFGIShader::DirectLightPushConstant));
-@@ -3642,6 +3690,7 @@ void GI::init(SkyRD *p_sky) {
+ 			RD::get_singleton()->compute_list_dispatch_indirect(compute_list, cc.solid_cell_dispatch_buffer_call, 0);
+ 		}
+@@ -3651,6 +3693,7 @@ void GI::init(SkyRD *p_sky) {
  	{
  		//calculate tables
  		String defines = "\n#define OCT_SIZE " + itos(SDFGI::LIGHTPROBE_OCT_SIZE) + "\n";
@@ -151,10 +168,10 @@ index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc259
  
  		Vector<String> direct_light_modes;
  		direct_light_modes.push_back("\n#define MODE_PROCESS_STATIC\n");
-diff --git forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.h forkDstPrefix/servers/rendering/renderer_rd/environment/gi.h
-index bf3daee05455ebbb0d9c3aa0d05dad4fbcdbdb46..1143b2615ac596c6db3f6400bed8449dd5589257 100644
---- forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.h
-+++ forkDstPrefix/servers/rendering/renderer_rd/environment/gi.h
+diff --git a/servers/rendering/renderer_rd/environment/gi.h b/servers/rendering/renderer_rd/environment/gi.h
+index 20033a3b0b..a7439376bb 100644
+--- a/servers/rendering/renderer_rd/environment/gi.h
++++ b/servers/rendering/renderer_rd/environment/gi.h
 @@ -381,6 +381,8 @@ private:
  			float bounce_feedback;
  			float y_mult;
@@ -164,7 +181,7 @@ index bf3daee05455ebbb0d9c3aa0d05dad4fbcdbdb46..1143b2615ac596c6db3f6400bed8449d
  		};
  
  		enum {
-@@ -680,6 +682,7 @@ public:
+@@ -678,6 +680,7 @@ public:
  		RSE::EnvironmentSDFGIYScale y_scale_mode = RSE::ENV_SDFGI_Y_SCALE_75_PERCENT;
  
  		float y_mult = 1.0;
@@ -172,62 +189,10 @@ index bf3daee05455ebbb0d9c3aa0d05dad4fbcdbdb46..1143b2615ac596c6db3f6400bed8449d
  
  		uint32_t version = 0;
  		uint32_t render_pass = 0;
-@@ -702,7 +705,7 @@ public:
- 		void debug_draw(uint32_t p_view_count, const Projection *p_projections, const Transform3D &p_transform, int p_width, int p_height, RID p_render_target, RID p_texture, const Vector<RID> &p_texture_views);
- 		void debug_probes(RID p_framebuffer, const uint32_t p_view_count, const Projection *p_camera_with_transforms);
- 
--		void pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
-+		bool pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
- 		void render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_region, const PagedArray<RenderGeometryInstance *> &p_instances, float p_exposure_normalization);
- 		void render_static_lights(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, uint32_t p_cascade_count, const uint32_t *p_cascade_indices, const PagedArray<RID> *p_positional_light_cull_result);
- 	};
-diff --git forkSrcPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp forkDstPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
-index 4bfb1e10b86d9418b9320612346f9e4842598e45..e43e3fc103897be7cbfa292f213b4b12d56a9199 100644
---- forkSrcPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
-+++ forkDstPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
-@@ -1722,8 +1722,21 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
- 	bool ce_needs_normal_roughness = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_ROUGHNESS);
- 	bool ce_needs_separate_specular = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_SEPARATE_SPECULAR);
- 
-+	Ref<RendererRD::GI::SDFGI> sdfgi;
-+	bool sdfgi_pre_processed = false;
-+	bool has_sdfgi = rb->has_custom_data(RB_SCOPE_SDFGI);
-+	if (has_sdfgi) {
-+		sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
-+		if (sdfgi.is_valid()) {
-+			sdfgi->update_cascades();
-+			sdfgi_pre_processed = sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
-+		}
-+	}
-+
- 	// sdfgi first
--	_update_sdfgi(p_render_data);
-+	if (!has_sdfgi || sdfgi_pre_processed) {
-+		_update_sdfgi(p_render_data);
-+	}
- 
- 	// assign render indices to voxel_gi_instances
- 	for (uint32_t i = 0; i < (uint32_t)p_render_data->voxel_gi_instances->size(); i++) {
-@@ -1743,13 +1756,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
- 
- 		p_render_data->voxel_gi_count = 0;
- 
--		if (rb->has_custom_data(RB_SCOPE_SDFGI)) {
--			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
--			if (sdfgi.is_valid()) {
--				sdfgi->update_cascades();
--				sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
--				sdfgi->update_light();
--			}
-+		if (sdfgi_pre_processed) {
-+			sdfgi->update_light();
- 		}
- 
- 		gi.setup_voxel_gi_instances(p_render_data, p_render_data->render_buffers, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances, p_render_data->voxel_gi_count);
-diff --git forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
-index 83bc643be9ca3e234d7062949ca3cfba14a9e04f..2e465c36ced996bf21c420f81f1b3d556c73bf8f 100644
---- forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
-+++ forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
+diff --git a/servers/rendering/renderer_rd/shaders/environment/gi.glsl b/servers/rendering/renderer_rd/shaders/environment/gi.glsl
+index 83bc643be9..2e465c36ce 100644
+--- a/servers/rendering/renderer_rd/shaders/environment/gi.glsl
++++ b/servers/rendering/renderer_rd/shaders/environment/gi.glsl
 @@ -401,7 +401,8 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
  			float softness = 0.2 + min(1.0, roughness * 5.0) * 4.0; //approximation to roughness so it does not seem like a hard fade
  			uint i = 0;
@@ -293,10 +258,10 @@ index 83bc643be9ca3e234d7062949ca3cfba14a9e04f..2e465c36ced996bf21c420f81f1b3d55
  
  	vec3 normal = normal_roughness.xyz;
  
-diff --git forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
-index ea32726132b1c25fa69564ee2b4cd3ddee9c7dda..9219a98acf8e25dc80dc8592a9cd6497c583acd1 100644
---- forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
-+++ forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
+diff --git a/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl b/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
+index ea32726132..9219a98acf 100644
+--- a/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
++++ b/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
 @@ -60,6 +60,7 @@ cascades;
  #define LIGHT_TYPE_AREA 3
  
