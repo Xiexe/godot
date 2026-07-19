@@ -1154,6 +1154,9 @@ uniform vec2 heightmap_flip;
 	if (flags[FLAG_UV2_USE_TRIPLANAR]) {
 		code += "varying vec3 uv2_triplanar_pos;\n";
 	}
+	if (distance_fade == DISTANCE_FADE_OBJECT_DITHER) {
+		code += "varying float object_fade_distance;\n";
+	}
 	if (flags[FLAG_UV1_USE_TRIPLANAR]) {
 		code += R"(
 uniform float uv1_blend_sharpness : hint_range(0.0, 150.0, 0.001);
@@ -1236,11 +1239,12 @@ void vertex() {)";
 			// This ensures the billboard faces the camera when casting shadows.
 			code += R"(
 	// Billboard Mode: Enabled
-	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
-			MAIN_CAM_INV_VIEW_MATRIX[0],
-			MAIN_CAM_INV_VIEW_MATRIX[1],
-			MAIN_CAM_INV_VIEW_MATRIX[2],
-			MODEL_MATRIX[3]);
+	vec4 modelview_translation = MODELVIEW_MATRIX[3];
+	MODELVIEW_MATRIX = mat4(
+			VIEW_MATRIX * vec4(MAIN_CAM_INV_VIEW_MATRIX[0].xyz, 0.0),
+			VIEW_MATRIX * vec4(MAIN_CAM_INV_VIEW_MATRIX[1].xyz, 0.0),
+			VIEW_MATRIX * vec4(MAIN_CAM_INV_VIEW_MATRIX[2].xyz, 0.0),
+			modelview_translation);
 )";
 			if (flags[FLAG_BILLBOARD_KEEP_SCALE]) {
 				code += R"(
@@ -1259,11 +1263,12 @@ void vertex() {)";
 			// This ensures the billboard faces the camera when casting shadows.
 			code += R"(
 	// Billboard Mode: Y-Billboard
-	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
-			vec4(normalize(cross(vec3(0.0, 1.0, 0.0), MAIN_CAM_INV_VIEW_MATRIX[2].xyz)), 0.0),
-			vec4(0.0, 1.0, 0.0, 0.0),
-			vec4(normalize(cross(MAIN_CAM_INV_VIEW_MATRIX[0].xyz, vec3(0.0, 1.0, 0.0))), 0.0),
-			MODEL_MATRIX[3]);
+	vec4 modelview_translation = MODELVIEW_MATRIX[3];
+	MODELVIEW_MATRIX = mat4(
+			VIEW_MATRIX * vec4(normalize(cross(vec3(0.0, 1.0, 0.0), MAIN_CAM_INV_VIEW_MATRIX[2].xyz)), 0.0),
+			VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0),
+			VIEW_MATRIX * vec4(normalize(cross(MAIN_CAM_INV_VIEW_MATRIX[0].xyz, vec3(0.0, 1.0, 0.0))), 0.0),
+			modelview_translation);
 )";
 			if (flags[FLAG_BILLBOARD_KEEP_SCALE]) {
 				code += R"(
@@ -1281,19 +1286,18 @@ void vertex() {)";
 			// Make billboard and rotated by rotation.
 			code += R"(
 	// Billboard Mode: Particles
-	mat4 mat_world = mat4(
-			normalize(INV_VIEW_MATRIX[0]),
-			normalize(INV_VIEW_MATRIX[1]),
-			normalize(INV_VIEW_MATRIX[2]),
-			MODEL_MATRIX[3]);
-	mat_world = mat_world * mat4(
+	vec4 modelview_translation = MODELVIEW_MATRIX[3];
+	MODELVIEW_MATRIX = mat4(
+			vec4(1.0, 0.0, 0.0, 0.0),
+			vec4(0.0, 1.0, 0.0, 0.0),
+			vec4(0.0, 0.0, 1.0, 0.0),
+			modelview_translation);
+	MODELVIEW_MATRIX = MODELVIEW_MATRIX * mat4(
 			vec4(cos(INSTANCE_CUSTOM.x), -sin(INSTANCE_CUSTOM.x), 0.0, 0.0),
 			vec4(sin(INSTANCE_CUSTOM.x), cos(INSTANCE_CUSTOM.x), 0.0, 0.0),
 			vec4(0.0, 0.0, 1.0, 0.0),
 			vec4(0.0, 0.0, 0.0, 1.0));
 )";
-			// Set modelview.
-			code += "	MODELVIEW_MATRIX = VIEW_MATRIX * mat_world;\n";
 			if (flags[FLAG_BILLBOARD_KEEP_SCALE]) {
 				code += R"(
 	// Billboard Keep Scale: Enabled
@@ -1351,6 +1355,13 @@ void vertex() {)";
 		MODELVIEW_MATRIX[1] *= sc;
 		MODELVIEW_MATRIX[2] *= sc;
 	}
+)";
+	}
+
+	if (distance_fade == DISTANCE_FADE_OBJECT_DITHER) {
+		code += R"(
+	// Distance Fade: Object Dither
+	object_fade_distance = length(MODELVIEW_MATRIX[3].xyz);
 )";
 	}
 
@@ -1837,7 +1848,7 @@ void fragment() {)";
 			if (distance_fade == DISTANCE_FADE_OBJECT_DITHER) {
 				code += R"(
 		// Distance Fade: Object Dither
-		float fade_distance = length((VIEW_MATRIX * MODEL_MATRIX[3]));
+		float fade_distance = object_fade_distance;
 )";
 			} else {
 				code += R"(

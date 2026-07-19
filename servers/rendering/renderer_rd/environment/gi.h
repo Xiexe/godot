@@ -381,6 +381,8 @@ private:
 			float bounce_feedback;
 			float y_mult;
 			uint32_t use_occlusion;
+
+			float camera_inv_transform[12];
 		};
 
 		enum {
@@ -678,6 +680,7 @@ public:
 		RSE::EnvironmentSDFGIYScale y_scale_mode = RSE::ENV_SDFGI_Y_SCALE_75_PERCENT;
 
 		float y_mult = 1.0;
+		float direct_light_camera_inv_transform[12] = {};
 
 		uint32_t version = 0;
 		uint32_t render_pass = 0;

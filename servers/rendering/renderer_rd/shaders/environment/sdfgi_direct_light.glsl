@@ -60,6 +60,7 @@ cascades;
 #define LIGHT_TYPE_AREA 3
 
 #include "../area_lights_inc.glsl"
+#include "../light_data_inc.glsl"
 
 struct Light {
 	vec3 color;
@@ -90,6 +91,11 @@ layout(set = 0, binding = 11) uniform texture2DArray lightprobe_texture;
 layout(set = 0, binding = 12) uniform texture3D occlusion_texture;
 
 layout(set = 1, binding = 0) uniform texture2D area_light_atlas;
+layout(set = 1, binding = 1) uniform texture2D directional_shadow_atlas;
+layout(set = 1, binding = 2, std140) uniform DirectionalLights {
+	DirectionalLightData data[MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS];
+}
+directional_lights;
 
 layout(push_constant, std430) uniform Params {
 	vec3 grid_size;
@@ -104,8 +110,12 @@ layout(push_constant, std430) uniform Params {
 	float bounce_feedback;
 	float y_mult;
 	bool use_occlusion;
+
+	mat3x4 camera_inv_transform;
 }
 params;
+
+const float INV_DIRECTIONAL_SHADOW_FADE = 10.0;
 
 vec2 octahedron_wrap(vec2 v) {
 	vec2 signVal;
@@ -174,6 +184,43 @@ void compute_area_light(uint index, vec3 position, out float attenuation, out ve
 	vec3 normal = light_vec;
 	ltc_evaluate_diff(normal, light_points, lights.data[index].area_projector_rect, max_mipmap, area_light_atlas, linear_sampler_with_mipmaps, ltc_diffuse, texture_color);
 	attenuation *= ltc_diffuse;
+}
+
+float get_directional_shadow_attenuation(uint directional_index, vec3 position) {
+	DirectionalLightData directional_light = directional_lights.data[directional_index];
+	if (directional_light.shadow_opacity <= 0.001) {
+		return 1.0;
+	}
+
+	// SDFGI stores positions in a Y-scaled space, but the directional shadow matrices use camera view space.
+	position.y /= params.y_mult;
+	vec3 view_pos = vec4(position, 1.0) * params.camera_inv_transform;
+	float depth_z = -view_pos.z;
+
+	vec4 pssm_coord;
+	float z_range;
+	vec4 v = vec4(view_pos, 1.0);
+
+	if (depth_z < directional_light.shadow_split_offsets.x) {
+		pssm_coord = directional_light.shadow_matrix1 * v;
+		z_range = directional_light.shadow_z_range.x;
+	} else if (depth_z < directional_light.shadow_split_offsets.y) {
+		pssm_coord = directional_light.shadow_matrix2 * v;
+		z_range = directional_light.shadow_z_range.y;
+	} else if (depth_z < directional_light.shadow_split_offsets.z) {
+		pssm_coord = directional_light.shadow_matrix3 * v;
+		z_range = directional_light.shadow_z_range.z;
+	} else {
+		pssm_coord = directional_light.shadow_matrix4 * v;
+		z_range = directional_light.shadow_z_range.w;
+	}
+
+	pssm_coord /= pssm_coord.w;
+	float depth = texture(sampler2D(directional_shadow_atlas, linear_sampler), pssm_coord.xy).r;
+	float shadow = exp(min(0.0, (pssm_coord.z - depth)) * z_range * INV_DIRECTIONAL_SHADOW_FADE);
+
+	shadow = mix(shadow, 1.0, smoothstep(directional_light.fade_from, directional_light.fade_to, view_pos.z));
+	return mix(1.0 - directional_light.shadow_opacity, 1.0, shadow);
 }
 
 void main() {
@@ -324,6 +371,10 @@ void main() {
 		switch (lights.data[i].type) {
 			case LIGHT_TYPE_DIRECTIONAL: {
 				direction = -lights.data[i].direction;
+				if (lights.data[i].has_shadow) {
+					// Directional lights store their shared shadow-buffer index in the otherwise-unused radius field.
+					attenuation *= get_directional_shadow_attenuation(uint(lights.data[i].radius), position);
+				}
 			} break;
 			case LIGHT_TYPE_OMNI: {
 				vec3 rel_vec = lights.data[i].position - position;

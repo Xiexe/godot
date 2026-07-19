@@ -778,6 +778,9 @@ bool SceneTree::process(double p_time) {
 #endif // _3D_DISABLED
 #endif // TOOLS_ENABLED
 
+	_process_late();
+	flush_transform_notifications();
+
 	// Second pass of scene tree fixed timestep interpolation.
 	// ToDo: Possibly needs another flush_transform_notifications here
 	// depending on whether there are side effects to _call_idle_callbacks().
@@ -1235,9 +1238,53 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 	p_group->call_queue.flush(); // Flush messages also after processing (for potential deferred calls).
 }
 
+void SceneTree::_process_group_late(ProcessGroup *p_group) {
+	// Late processing is the terminal node callback phase for the frame.
+	// Flush messages queued earlier in the frame before callbacks run, but do not
+	// flush again afterwards so deferred work scheduled from late processing lands next frame.
+	p_group->call_queue.flush();
+
+	Vector<Node *> &nodes = p_group->late_nodes;
+	if (nodes.is_empty()) {
+		return;
+	}
+
+	if (p_group->late_node_order_dirty) {
+		nodes.sort_custom<Node::ComparatorWithPriority>();
+		p_group->late_node_order_dirty = false;
+	}
+
+	Vector<Node *> nodes_copy = nodes;
+
+	uint32_t node_count = nodes_copy.size();
+	Node **nodes_ptr = (Node **)nodes_copy.ptr();
+
+	for (uint32_t i = 0; i < node_count; i++) {
+		Node *n = nodes_ptr[i];
+		if (nodes_removed_on_group_call.has(n)) {
+			continue;
+		}
+
+		if (!n->can_process() || !n->is_inside_tree()) {
+			continue;
+		}
+
+		if (n->is_processing_late()) {
+			n->notification(Node::NOTIFICATION_LATE_PROCESS);
+		}
+	}
+}
+
 void SceneTree::_process_groups_thread(uint32_t p_index, bool p_physics) {
 	Node::current_process_thread_group = local_process_group_cache[p_index]->owner;
 	_process_group(local_process_group_cache[p_index], p_physics);
+	Node::current_process_thread_group = nullptr;
+}
+
+void SceneTree::_process_groups_thread_late(uint32_t p_index, bool p_unused) {
+	(void)p_unused;
+	Node::current_process_thread_group = local_process_group_cache[p_index]->owner;
+	_process_group_late(local_process_group_cache[p_index]);
 	Node::current_process_thread_group = nullptr;
 }
 
@@ -1359,6 +1406,97 @@ void SceneTree::_process(bool p_physics) {
 	}
 }
 
+void SceneTree::_process_late() {
+	if (process_groups_dirty) {
+		{
+			ProcessGroup **pg_ptr = (ProcessGroup **)process_groups.ptr();
+			uint32_t pg_count = process_groups.size();
+
+			for (uint32_t i = 0; i < pg_count; i++) {
+				if (pg_ptr[i]->removed) {
+					pg_ptr[i] = pg_ptr[pg_count - 1];
+					i--;
+					pg_count--;
+				}
+			}
+			if (pg_count != process_groups.size()) {
+				process_groups.resize(pg_count);
+			}
+		}
+		{
+			process_groups.sort_custom<ProcessGroupSort>();
+		}
+
+		process_groups_dirty = false;
+	}
+
+	uint32_t group_count = process_groups.size();
+
+	if (group_count == 0) {
+		return;
+	}
+
+	process_last_pass++;
+	uint32_t from = 0;
+	uint32_t process_count = 0;
+	nodes_removed_on_group_call_lock++;
+
+	int current_order = process_groups[0]->owner ? process_groups[0]->owner->data.process_thread_group_order : 0;
+	bool current_threaded = process_groups[0]->owner ? process_groups[0]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD : false;
+
+	for (uint32_t i = 0; i <= group_count; i++) {
+		int order = i < group_count && process_groups[i]->owner ? process_groups[i]->owner->data.process_thread_group_order : 0;
+		bool threaded = i < group_count && process_groups[i]->owner ? process_groups[i]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD : false;
+
+		if (i == group_count || current_order != order || current_threaded != threaded) {
+			if (process_count > 0) {
+				bool using_threads = process_groups[from]->owner && process_groups[from]->owner->data.process_thread_group == Node::PROCESS_THREAD_GROUP_SUB_THREAD && !node_threading_disabled;
+
+				if (using_threads) {
+					local_process_group_cache.clear();
+				}
+				for (uint32_t j = from; j < i; j++) {
+					if (process_groups[j]->last_pass == process_last_pass) {
+						if (using_threads) {
+							local_process_group_cache.push_back(process_groups[j]);
+						} else {
+							_process_group_late(process_groups[j]);
+						}
+					}
+				}
+
+				if (using_threads) {
+					WorkerThreadPool::GroupID id = WorkerThreadPool::get_singleton()->add_template_group_task(this, &SceneTree::_process_groups_thread_late, false, local_process_group_cache.size(), -1, true);
+					WorkerThreadPool::get_singleton()->wait_for_group_task_completion(id);
+				}
+			}
+
+			if (i == group_count) {
+				break;
+			}
+
+			from = i;
+			current_threaded = threaded;
+			current_order = order;
+		}
+
+		if (process_groups[i]->removed) {
+			continue;
+		}
+
+		ProcessGroup *pg = process_groups[i];
+		if (!pg->late_nodes.is_empty()) {
+			pg->last_pass = process_last_pass;
+			process_count++;
+		}
+	}
+
+	nodes_removed_on_group_call_lock--;
+	if (nodes_removed_on_group_call_lock == 0) {
+		nodes_removed_on_group_call.clear();
+	}
+}
+
 bool SceneTree::ProcessGroupSort::operator()(const ProcessGroup *p_left, const ProcessGroup *p_right) const {
 	int left_order = p_left->owner ? p_left->owner->data.process_thread_group_order : 0;
 	int right_order = p_right->owner ? p_right->owner->data.process_thread_group_order : 0;
@@ -1410,6 +1548,11 @@ void SceneTree::_remove_node_from_process_group(Node *p_node, Node *p_owner) {
 		bool found = pg->physics_nodes.erase(p_node);
 		ERR_FAIL_COND(!found);
 	}
+
+	if (p_node->is_processing_late()) {
+		bool found = pg->late_nodes.erase(p_node);
+		ERR_FAIL_COND(!found);
+	}
 }
 
 void SceneTree::_add_node_to_process_group(Node *p_node, Node *p_owner) {
@@ -1424,6 +1567,11 @@ void SceneTree::_add_node_to_process_group(Node *p_node, Node *p_owner) {
 	if (p_node->is_physics_processing() || p_node->is_physics_processing_internal()) {
 		pg->physics_nodes.push_back(p_node);
 		pg->physics_node_order_dirty = true;
+	}
+
+	if (p_node->is_processing_late()) {
+		pg->late_nodes.push_back(p_node);
+		pg->late_node_order_dirty = true;
 	}
 }
 

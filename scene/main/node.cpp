@@ -100,6 +100,10 @@ void Node::_notification(int p_notification) {
 			GDVIRTUAL_CALL(_process, get_process_delta_time());
 		} break;
 
+		case NOTIFICATION_LATE_PROCESS: {
+			GDVIRTUAL_CALL(_late_process, get_process_delta_time());
+		} break;
+
 		case NOTIFICATION_PHYSICS_PROCESS: {
 			GDVIRTUAL_CALL(_physics_process, get_physics_process_delta_time());
 		} break;
@@ -271,6 +275,9 @@ void Node::_notification(int p_notification) {
 
 			if (GDVIRTUAL_IS_OVERRIDDEN(_process)) {
 				set_process(true);
+			}
+			if (GDVIRTUAL_IS_OVERRIDDEN(_late_process)) {
+				set_process_late(true);
 			}
 			if (GDVIRTUAL_IS_OVERRIDDEN(_physics_process)) {
 				set_physics_process(true);
@@ -895,6 +902,8 @@ bool Node::can_process_notification(int p_what) const {
 			return data.physics_process;
 		case NOTIFICATION_PROCESS:
 			return data.process;
+		case NOTIFICATION_LATE_PROCESS:
+			return data.process_late;
 		case NOTIFICATION_INTERNAL_PROCESS:
 			return data.process_internal;
 		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS:
@@ -1046,6 +1055,32 @@ void Node::set_process(bool p_process) {
 
 bool Node::is_processing() const {
 	return data.process;
+}
+
+void Node::set_process_late(bool p_process_late) {
+	ERR_THREAD_GUARD
+	if (data.process_late == p_process_late) {
+		return;
+	}
+
+	if (!is_inside_tree()) {
+		data.process_late = p_process_late;
+		return;
+	}
+
+	if (_is_any_processing()) {
+		_remove_from_process_thread_group();
+	}
+
+	data.process_late = p_process_late;
+
+	if (_is_any_processing()) {
+		_add_to_process_thread_group();
+	}
+}
+
+bool Node::is_processing_late() const {
+	return data.process_late;
 }
 
 void Node::set_process_internal(bool p_process_internal) {
@@ -3805,11 +3840,13 @@ void Node::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_physics_processing"), &Node::is_physics_processing);
 	ClassDB::bind_method(D_METHOD("get_process_delta_time"), &Node::get_process_delta_time);
 	ClassDB::bind_method(D_METHOD("set_process", "enable"), &Node::set_process);
+	ClassDB::bind_method(D_METHOD("set_process_late", "enable"), &Node::set_process_late);
 	ClassDB::bind_method(D_METHOD("set_process_priority", "priority"), &Node::set_process_priority);
 	ClassDB::bind_method(D_METHOD("get_process_priority"), &Node::get_process_priority);
 	ClassDB::bind_method(D_METHOD("set_physics_process_priority", "priority"), &Node::set_physics_process_priority);
 	ClassDB::bind_method(D_METHOD("get_physics_process_priority"), &Node::get_physics_process_priority);
 	ClassDB::bind_method(D_METHOD("is_processing"), &Node::is_processing);
+	ClassDB::bind_method(D_METHOD("is_processing_late"), &Node::is_processing_late);
 	ClassDB::bind_method(D_METHOD("set_process_input", "enable"), &Node::set_process_input);
 	ClassDB::bind_method(D_METHOD("is_processing_input"), &Node::is_processing_input);
 	ClassDB::bind_method(D_METHOD("set_process_shortcut_input", "enable"), &Node::set_process_shortcut_input);
@@ -3957,6 +3994,7 @@ void Node::_bind_methods() {
 	BIND_CONSTANT(NOTIFICATION_POST_ENTER_TREE);
 	BIND_CONSTANT(NOTIFICATION_DISABLED);
 	BIND_CONSTANT(NOTIFICATION_ENABLED);
+	BIND_CONSTANT(NOTIFICATION_LATE_PROCESS);
 	BIND_CONSTANT(NOTIFICATION_RESET_PHYSICS_INTERPOLATION);
 
 	BIND_CONSTANT(NOTIFICATION_EDITOR_PRE_SAVE);
@@ -4062,6 +4100,7 @@ void Node::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "editor_description", PROPERTY_HINT_MULTILINE_TEXT), "set_editor_description", "get_editor_description");
 
 	GDVIRTUAL_BIND(_process, "delta");
+	GDVIRTUAL_BIND(_late_process, "delta");
 	GDVIRTUAL_BIND(_physics_process, "delta");
 	GDVIRTUAL_BIND(_enter_tree);
 	GDVIRTUAL_BIND(_exit_tree);
@@ -4101,6 +4140,7 @@ Node::Node() {
 
 	data.physics_process = false;
 	data.process = false;
+	data.process_late = false;
 
 	data.physics_process_internal = false;
 	data.process_internal = false;

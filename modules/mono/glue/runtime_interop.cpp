@@ -41,6 +41,7 @@
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
 #include "core/io/compression.h"
+#include "core/input/input_event.h"
 #include "core/io/marshalls.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
@@ -48,6 +49,10 @@
 #include "core/os/os.h"
 #include "core/string/string_name.h"
 #include "core/variant/variant_parser.h"
+#include "servers/physics_2d/physics_server_2d.h"
+#include "servers/physics_3d/physics_server_3d.h"
+
+#include <cstddef>
 
 #ifdef TOOLS_ENABLED
 #include "editor/file_system/editor_file_system.h"
@@ -62,8 +67,749 @@ static_assert(sizeof(SafeRefCount) == sizeof(uint32_t));
 
 typedef Object *(*godotsharp_class_creation_func)(bool);
 
+#ifdef __cplusplus
+}
+#endif
+
+namespace {
+
+template <typename T>
+constexpr size_t align_up_size(size_t p_size) {
+	return (p_size + alignof(T) - 1) & ~(alignof(T) - 1);
+}
+
+struct godotsharp_physics_ray_query_result_2d {
+	Vector2 position;
+	Vector2 normal;
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+};
+
+struct godotsharp_physics_ray_query_result_3d {
+	Vector3 position;
+	Vector3 normal;
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+	int32_t face_index;
+};
+
+struct godotsharp_physics_ray_command_3d {
+	Vector3 from;
+	Vector3 to;
+};
+
+struct godotsharp_physics_shape_query_result_2d {
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+};
+
+struct godotsharp_physics_shape_query_result_3d {
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+};
+
+struct godotsharp_physics_shape_rest_info_2d {
+	Vector2 point;
+	Vector2 normal;
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+	Vector2 linear_velocity;
+};
+
+struct godotsharp_physics_shape_rest_info_3d {
+	Vector3 point;
+	Vector3 normal;
+	RID rid;
+	uint64_t collider_id;
+	int32_t shape;
+	Vector3 linear_velocity;
+};
+
+struct godotsharp_physics_shape_collision_2d {
+	Vector2 query_point;
+	Vector2 collider_point;
+};
+
+struct godotsharp_physics_shape_collision_3d {
+	Vector3 query_point;
+	Vector3 collider_point;
+};
+
+struct godotsharp_input_event_mouse_motion_marshaled {
+	int32_t device;
+	int64_t window_id;
+	int32_t button_mask;
+	Vector2 position;
+	Vector2 global_position;
+	Vector2 relative;
+	Vector2 screen_relative;
+	Vector2 velocity;
+	Vector2 screen_velocity;
+	Vector2 tilt;
+	float pressure;
+	uint8_t canceled;
+	uint8_t shift_pressed;
+	uint8_t alt_pressed;
+	uint8_t ctrl_pressed;
+	uint8_t meta_pressed;
+	uint8_t command_or_control_autoremap;
+	uint8_t pen_inverted;
+};
+
+struct godotsharp_input_event_mouse_button_marshaled {
+	int32_t device;
+	int64_t window_id;
+	int32_t button_mask;
+	Vector2 position;
+	Vector2 global_position;
+	float factor;
+	int32_t button_index;
+	uint8_t canceled;
+	uint8_t pressed;
+	uint8_t double_click;
+	uint8_t shift_pressed;
+	uint8_t alt_pressed;
+	uint8_t ctrl_pressed;
+	uint8_t meta_pressed;
+	uint8_t command_or_control_autoremap;
+};
+
+struct godotsharp_input_event_key_marshaled {
+	int32_t device;
+	int64_t window_id;
+	int32_t keycode;
+	int32_t physical_keycode;
+	int32_t key_label;
+	uint32_t unicode;
+	int32_t location;
+	uint8_t canceled;
+	uint8_t pressed;
+	uint8_t echo;
+	uint8_t shift_pressed;
+	uint8_t alt_pressed;
+	uint8_t ctrl_pressed;
+	uint8_t meta_pressed;
+	uint8_t command_or_control_autoremap;
+};
+
+static_assert(offsetof(godotsharp_physics_ray_query_result_2d, position) == 0);
+static_assert(offsetof(godotsharp_physics_ray_query_result_2d, normal) == align_up_size<Vector2>(sizeof(Vector2)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_2d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_ray_query_result_2d, normal) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_2d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_ray_query_result_2d, rid) + sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_2d, collider_id) + sizeof(uint64_t)));
+static_assert(sizeof(godotsharp_physics_ray_query_result_2d) == align_up_size<godotsharp_physics_ray_query_result_2d>(offsetof(godotsharp_physics_ray_query_result_2d, shape) + sizeof(int32_t)));
+
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, position) == 0);
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, normal) == align_up_size<Vector3>(sizeof(Vector3)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_ray_query_result_3d, normal) + sizeof(Vector3)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_ray_query_result_3d, rid) + sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) + sizeof(uint64_t)));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, face_index) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_3d, shape) + sizeof(int32_t)));
+static_assert(sizeof(godotsharp_physics_ray_query_result_3d) == align_up_size<godotsharp_physics_ray_query_result_3d>(offsetof(godotsharp_physics_ray_query_result_3d, face_index) + sizeof(int32_t)));
+static_assert(sizeof(godotsharp_physics_ray_query_result_3d) == sizeof(PhysicsDirectSpaceState3D::RayBatchResult));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, position) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, position));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, normal) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, normal));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, rid) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, rid));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, collider_id));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, shape) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, shape));
+static_assert(offsetof(godotsharp_physics_ray_query_result_3d, face_index) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, face_index));
+
+static_assert(offsetof(godotsharp_physics_ray_command_3d, from) == 0);
+static_assert(offsetof(godotsharp_physics_ray_command_3d, to) == align_up_size<Vector3>(sizeof(Vector3)));
+static_assert(sizeof(godotsharp_physics_ray_command_3d) == align_up_size<godotsharp_physics_ray_command_3d>(offsetof(godotsharp_physics_ray_command_3d, to) + sizeof(Vector3)));
+static_assert(sizeof(godotsharp_physics_ray_command_3d) == sizeof(PhysicsDirectSpaceState3D::RayCommand));
+static_assert(offsetof(godotsharp_physics_ray_command_3d, from) == offsetof(PhysicsDirectSpaceState3D::RayCommand, from));
+static_assert(offsetof(godotsharp_physics_ray_command_3d, to) == offsetof(PhysicsDirectSpaceState3D::RayCommand, to));
+
+static_assert(offsetof(godotsharp_physics_shape_query_result_2d, rid) == 0);
+static_assert(offsetof(godotsharp_physics_shape_query_result_2d, collider_id) == align_up_size<uint64_t>(sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_shape_query_result_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_query_result_2d, collider_id) + sizeof(uint64_t)));
+static_assert(sizeof(godotsharp_physics_shape_query_result_2d) == align_up_size<godotsharp_physics_shape_query_result_2d>(offsetof(godotsharp_physics_shape_query_result_2d, shape) + sizeof(int32_t)));
+
+static_assert(offsetof(godotsharp_physics_shape_query_result_3d, rid) == 0);
+static_assert(offsetof(godotsharp_physics_shape_query_result_3d, collider_id) == align_up_size<uint64_t>(sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_shape_query_result_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_query_result_3d, collider_id) + sizeof(uint64_t)));
+static_assert(sizeof(godotsharp_physics_shape_query_result_3d) == align_up_size<godotsharp_physics_shape_query_result_3d>(offsetof(godotsharp_physics_shape_query_result_3d, shape) + sizeof(int32_t)));
+
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, point) == 0);
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, normal) == align_up_size<Vector2>(sizeof(Vector2)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_shape_rest_info_2d, normal) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_shape_rest_info_2d, rid) + sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_rest_info_2d, collider_id) + sizeof(uint64_t)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, linear_velocity) == align_up_size<Vector2>(offsetof(godotsharp_physics_shape_rest_info_2d, shape) + sizeof(int32_t)));
+static_assert(sizeof(godotsharp_physics_shape_rest_info_2d) == align_up_size<godotsharp_physics_shape_rest_info_2d>(offsetof(godotsharp_physics_shape_rest_info_2d, linear_velocity) + sizeof(Vector2)));
+
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, point) == 0);
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, normal) == align_up_size<Vector3>(sizeof(Vector3)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_shape_rest_info_3d, normal) + sizeof(Vector3)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_shape_rest_info_3d, rid) + sizeof(RID)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_rest_info_3d, collider_id) + sizeof(uint64_t)));
+static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, linear_velocity) == align_up_size<Vector3>(offsetof(godotsharp_physics_shape_rest_info_3d, shape) + sizeof(int32_t)));
+static_assert(sizeof(godotsharp_physics_shape_rest_info_3d) == align_up_size<godotsharp_physics_shape_rest_info_3d>(offsetof(godotsharp_physics_shape_rest_info_3d, linear_velocity) + sizeof(Vector3)));
+
+static_assert(offsetof(godotsharp_physics_shape_collision_2d, query_point) == 0);
+static_assert(offsetof(godotsharp_physics_shape_collision_2d, collider_point) == align_up_size<Vector2>(sizeof(Vector2)));
+static_assert(sizeof(godotsharp_physics_shape_collision_2d) == sizeof(Vector2) * 2);
+
+static_assert(offsetof(godotsharp_physics_shape_collision_3d, query_point) == 0);
+static_assert(offsetof(godotsharp_physics_shape_collision_3d, collider_point) == align_up_size<Vector3>(sizeof(Vector3)));
+static_assert(sizeof(godotsharp_physics_shape_collision_3d) == sizeof(Vector3) * 2);
+
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, device) == 0);
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, button_mask) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_motion_marshaled, window_id) + sizeof(int64_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, button_mask) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, global_position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, position) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, relative) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, global_position) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_relative) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, relative) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, velocity) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_relative) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_velocity) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, velocity) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, tilt) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_velocity) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, pressure) == align_up_size<float>(offsetof(godotsharp_input_event_mouse_motion_marshaled, tilt) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_mouse_motion_marshaled, pressure) + sizeof(float)));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, shift_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, canceled) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, alt_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, shift_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, alt_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, meta_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, ctrl_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_mouse_motion_marshaled, meta_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, pen_inverted) == offsetof(godotsharp_input_event_mouse_motion_marshaled, command_or_control_autoremap) + sizeof(uint8_t));
+
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, device) == 0);
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, button_mask) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, window_id) + sizeof(int64_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_button_marshaled, button_mask) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, global_position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_button_marshaled, position) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, factor) == align_up_size<float>(offsetof(godotsharp_input_event_mouse_button_marshaled, global_position) + sizeof(Vector2)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, button_index) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, factor) + sizeof(float)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, button_index) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, canceled) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, double_click) == offsetof(godotsharp_input_event_mouse_button_marshaled, pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, shift_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, double_click) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, alt_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, shift_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, alt_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, meta_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, ctrl_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_mouse_button_marshaled, meta_pressed) + sizeof(uint8_t));
+
+static_assert(offsetof(godotsharp_input_event_key_marshaled, device) == 0);
+static_assert(offsetof(godotsharp_input_event_key_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, keycode) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, window_id) + sizeof(int64_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, physical_keycode) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, keycode) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, key_label) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, physical_keycode) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, unicode) == align_up_size<uint32_t>(offsetof(godotsharp_input_event_key_marshaled, key_label) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, location) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, unicode) + sizeof(uint32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_key_marshaled, location) + sizeof(int32_t)));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, pressed) == offsetof(godotsharp_input_event_key_marshaled, canceled) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, echo) == offsetof(godotsharp_input_event_key_marshaled, pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, shift_pressed) == offsetof(godotsharp_input_event_key_marshaled, echo) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, alt_pressed) == offsetof(godotsharp_input_event_key_marshaled, shift_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_key_marshaled, alt_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, meta_pressed) == offsetof(godotsharp_input_event_key_marshaled, ctrl_pressed) + sizeof(uint8_t));
+static_assert(offsetof(godotsharp_input_event_key_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_key_marshaled, meta_pressed) + sizeof(uint8_t));
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::RayResult &p_native, godotsharp_physics_ray_query_result_2d &r_result) {
+	r_result.position = p_native.position;
+	r_result.normal = p_native.normal;
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+}
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::RayResult &p_native, godotsharp_physics_ray_query_result_3d &r_result) {
+	r_result.position = p_native.position;
+	r_result.normal = p_native.normal;
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+	r_result.face_index = p_native.face_index;
+}
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::ShapeResult &p_native, godotsharp_physics_shape_query_result_2d &r_result) {
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+}
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::ShapeResult &p_native, godotsharp_physics_shape_query_result_3d &r_result) {
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+}
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::ShapeRestInfo &p_native, godotsharp_physics_shape_rest_info_2d &r_result) {
+	r_result.point = p_native.point;
+	r_result.normal = p_native.normal;
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+	r_result.linear_velocity = p_native.linear_velocity;
+}
+
+static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::ShapeRestInfo &p_native, godotsharp_physics_shape_rest_info_3d &r_result) {
+	r_result.point = p_native.point;
+	r_result.normal = p_native.normal;
+	r_result.rid = p_native.rid;
+	r_result.collider_id = (uint64_t)p_native.collider_id;
+	r_result.shape = p_native.shape;
+	r_result.linear_velocity = p_native.linear_velocity;
+}
+
+static _FORCE_INLINE_ uint8_t godotsharp_input_event_bool(bool p_value) {
+	return p_value ? 1 : 0;
+}
+
+static _FORCE_INLINE_ void godotsharp_input_event_assign_common(const InputEvent *p_event, int32_t &r_device, uint8_t &r_canceled) {
+	r_device = p_event->get_device();
+	r_canceled = godotsharp_input_event_bool(p_event->is_canceled());
+}
+
+static _FORCE_INLINE_ void godotsharp_input_event_assign_window(const InputEventFromWindow *p_event, int64_t &r_window_id) {
+	r_window_id = p_event->get_window_id();
+}
+
+static _FORCE_INLINE_ void godotsharp_input_event_assign_modifiers(const InputEventWithModifiers *p_event,
+		uint8_t &r_shift_pressed,
+		uint8_t &r_alt_pressed,
+		uint8_t &r_ctrl_pressed,
+		uint8_t &r_meta_pressed,
+		uint8_t &r_command_or_control_autoremap) {
+	r_shift_pressed = godotsharp_input_event_bool(p_event->is_shift_pressed());
+	r_alt_pressed = godotsharp_input_event_bool(p_event->is_alt_pressed());
+	r_ctrl_pressed = godotsharp_input_event_bool(p_event->is_ctrl_pressed());
+	r_meta_pressed = godotsharp_input_event_bool(p_event->is_meta_pressed());
+	r_command_or_control_autoremap = godotsharp_input_event_bool(p_event->is_command_or_control_autoremap());
+}
+
+static _FORCE_INLINE_ void godotsharp_input_event_assign_mouse(const InputEventMouse *p_event,
+		int32_t &r_button_mask,
+		Vector2 &r_position,
+		Vector2 &r_global_position) {
+	r_button_mask = (int32_t)p_event->get_button_mask();
+	r_position = p_event->get_position();
+	r_global_position = p_event->get_global_position();
+}
+
+} // namespace
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 bool godotsharp_dotnet_module_is_initialized() {
 	return GDMono::get_singleton()->is_initialized();
+}
+
+bool godotsharp_physics_direct_space_state_2d_intersect_ray(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsRayQueryParameters2D *p_parameters,
+		godotsharp_physics_ray_query_result_2d *r_result) {
+	if (r_result != nullptr) {
+		*r_result = {};
+	}
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+	ERR_FAIL_NULL_V(r_result, false);
+
+	PhysicsDirectSpaceState2D::RayResult result;
+	if (!p_space_state->intersect_ray(p_parameters->get_parameters(), result)) {
+		return false;
+	}
+
+	godotsharp_physics_query_assign_result(result, *r_result);
+	return true;
+}
+
+int32_t godotsharp_physics_direct_space_state_2d_intersect_point(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsPointQueryParameters2D *p_parameters,
+		godotsharp_physics_shape_query_result_2d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	Vector<PhysicsDirectSpaceState2D::ShapeResult> native_results;
+	native_results.resize(p_result_max);
+	const int32_t result_count = p_space_state->intersect_point(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
+	for (int32_t i = 0; i < result_count; i++) {
+		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
+	}
+	return result_count;
+}
+
+int32_t godotsharp_physics_direct_space_state_2d_intersect_shape(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsShapeQueryParameters2D *p_parameters,
+		godotsharp_physics_shape_query_result_2d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	Vector<PhysicsDirectSpaceState2D::ShapeResult> native_results;
+	native_results.resize(p_result_max);
+	const int32_t result_count = p_space_state->intersect_shape(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
+	for (int32_t i = 0; i < result_count; i++) {
+		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
+	}
+	return result_count;
+}
+
+bool godotsharp_physics_direct_space_state_2d_cast_motion(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsShapeQueryParameters2D *p_parameters,
+		real_t *r_closest_safe, real_t *r_closest_unsafe) {
+	ERR_FAIL_NULL_V(r_closest_safe, false);
+	ERR_FAIL_NULL_V(r_closest_unsafe, false);
+
+	*r_closest_safe = 1.0;
+	*r_closest_unsafe = 1.0;
+
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+
+	return p_space_state->cast_motion(p_parameters->get_parameters(), *r_closest_safe, *r_closest_unsafe);
+}
+
+int32_t godotsharp_physics_direct_space_state_2d_collide_shape(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsShapeQueryParameters2D *p_parameters,
+		godotsharp_physics_shape_collision_2d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	int result_count = 0;
+	if (!p_space_state->collide_shape(p_parameters->get_parameters(), reinterpret_cast<Vector2 *>(r_results), p_result_max * 2, result_count)) {
+		return 0;
+	}
+
+	return result_count / 2;
+}
+
+bool godotsharp_physics_direct_space_state_2d_rest_info(PhysicsDirectSpaceState2D *p_space_state,
+		PhysicsShapeQueryParameters2D *p_parameters,
+		godotsharp_physics_shape_rest_info_2d *r_result) {
+	if (r_result != nullptr) {
+		*r_result = {};
+	}
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+	ERR_FAIL_NULL_V(r_result, false);
+
+	PhysicsDirectSpaceState2D::ShapeRestInfo result;
+	if (!p_space_state->rest_info(p_parameters->get_parameters(), &result)) {
+		return false;
+	}
+
+	godotsharp_physics_query_assign_result(result, *r_result);
+	return true;
+}
+
+bool godotsharp_physics_direct_space_state_3d_intersect_ray(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsRayQueryParameters3D *p_parameters,
+		godotsharp_physics_ray_query_result_3d *r_result) {
+	if (r_result != nullptr) {
+		*r_result = {};
+	}
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+	ERR_FAIL_NULL_V(r_result, false);
+
+	PhysicsDirectSpaceState3D::RayResult result;
+	if (!p_space_state->intersect_ray(p_parameters->get_parameters(), result)) {
+		return false;
+	}
+
+	godotsharp_physics_query_assign_result(result, *r_result);
+	return true;
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_all(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsRayQueryParameters3D *p_parameters,
+		godotsharp_physics_ray_query_result_3d *r_results,
+		int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	return p_space_state->intersect_ray_all(
+			p_parameters->get_parameters(),
+			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
+			p_result_max);
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_batch(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsRayQueryParameters3D *p_parameters,
+		const godotsharp_physics_ray_command_3d *p_commands,
+		int32_t p_command_count,
+		godotsharp_physics_ray_query_result_3d *r_results) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_command_count < 0, 0);
+
+	if (p_command_count == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(p_commands, 0);
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	return p_space_state->intersect_ray_batch(
+			p_parameters->get_parameters(),
+			reinterpret_cast<const PhysicsDirectSpaceState3D::RayCommand *>(p_commands),
+			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
+			p_command_count);
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsRayQueryParameters3D *p_parameters,
+		const godotsharp_physics_ray_command_3d *p_commands,
+		int32_t p_command_count,
+		godotsharp_physics_ray_query_result_3d *r_results,
+		int32_t p_max_results_per_command,
+		int32_t *r_result_counts) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_command_count < 0, 0);
+	ERR_FAIL_COND_V(p_max_results_per_command < 0, 0);
+
+	if (p_command_count == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(p_commands, 0);
+	ERR_FAIL_NULL_V(r_result_counts, 0);
+
+	if (p_max_results_per_command == 0) {
+		for (int32_t i = 0; i < p_command_count; i++) {
+			r_result_counts[i] = 0;
+		}
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	return p_space_state->intersect_ray_batch_all(
+			p_parameters->get_parameters(),
+			reinterpret_cast<const PhysicsDirectSpaceState3D::RayCommand *>(p_commands),
+			p_command_count,
+			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
+			p_max_results_per_command,
+			reinterpret_cast<int *>(r_result_counts));
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_intersect_point(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsPointQueryParameters3D *p_parameters,
+		godotsharp_physics_shape_query_result_3d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	Vector<PhysicsDirectSpaceState3D::ShapeResult> native_results;
+	native_results.resize(p_result_max);
+	const int32_t result_count = p_space_state->intersect_point(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
+	for (int32_t i = 0; i < result_count; i++) {
+		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
+	}
+	return result_count;
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_intersect_shape(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsShapeQueryParameters3D *p_parameters,
+		godotsharp_physics_shape_query_result_3d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	Vector<PhysicsDirectSpaceState3D::ShapeResult> native_results;
+	native_results.resize(p_result_max);
+	const int32_t result_count = p_space_state->intersect_shape(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
+	for (int32_t i = 0; i < result_count; i++) {
+		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
+	}
+	return result_count;
+}
+
+bool godotsharp_physics_direct_space_state_3d_cast_motion(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsShapeQueryParameters3D *p_parameters,
+		real_t *r_closest_safe, real_t *r_closest_unsafe) {
+	ERR_FAIL_NULL_V(r_closest_safe, false);
+	ERR_FAIL_NULL_V(r_closest_unsafe, false);
+
+	*r_closest_safe = 1.0;
+	*r_closest_unsafe = 1.0;
+
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+
+	return p_space_state->cast_motion(p_parameters->get_parameters(), *r_closest_safe, *r_closest_unsafe);
+}
+
+int32_t godotsharp_physics_direct_space_state_3d_collide_shape(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsShapeQueryParameters3D *p_parameters,
+		godotsharp_physics_shape_collision_3d *r_results, int32_t p_result_max) {
+	ERR_FAIL_NULL_V(p_space_state, 0);
+	ERR_FAIL_NULL_V(p_parameters, 0);
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	int result_count = 0;
+	if (!p_space_state->collide_shape(p_parameters->get_parameters(), reinterpret_cast<Vector3 *>(r_results), p_result_max * 2, result_count)) {
+		return 0;
+	}
+
+	return result_count / 2;
+}
+
+bool godotsharp_physics_direct_space_state_3d_rest_info(PhysicsDirectSpaceState3D *p_space_state,
+		PhysicsShapeQueryParameters3D *p_parameters,
+		godotsharp_physics_shape_rest_info_3d *r_result) {
+	if (r_result != nullptr) {
+		*r_result = {};
+	}
+	ERR_FAIL_NULL_V(p_space_state, false);
+	ERR_FAIL_NULL_V(p_parameters, false);
+	ERR_FAIL_NULL_V(r_result, false);
+
+	PhysicsDirectSpaceState3D::ShapeRestInfo result;
+	if (!p_space_state->rest_info(p_parameters->get_parameters(), &result)) {
+		return false;
+	}
+
+	godotsharp_physics_query_assign_result(result, *r_result);
+	return true;
+}
+
+int32_t godotsharp_input_event_get_fast_type(Object *p_event) {
+	if (Object::cast_to<InputEventMouseMotion>(p_event) != nullptr) {
+		return 1;
+	}
+	if (Object::cast_to<InputEventMouseButton>(p_event) != nullptr) {
+		return 2;
+	}
+	if (Object::cast_to<InputEventKey>(p_event) != nullptr) {
+		return 3;
+	}
+	return 0;
+}
+
+void godotsharp_input_event_as_mouse_motion(Object *p_event, godotsharp_input_event_mouse_motion_marshaled *r_event) {
+	if (r_event != nullptr) {
+		*r_event = {};
+	}
+	ERR_FAIL_NULL(p_event);
+	ERR_FAIL_NULL(r_event);
+
+	const InputEventMouseMotion *event = Object::cast_to<InputEventMouseMotion>(p_event);
+	ERR_FAIL_NULL(event);
+
+	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
+	godotsharp_input_event_assign_window(event, r_event->window_id);
+	godotsharp_input_event_assign_modifiers(event,
+			r_event->shift_pressed,
+			r_event->alt_pressed,
+			r_event->ctrl_pressed,
+			r_event->meta_pressed,
+			r_event->command_or_control_autoremap);
+	godotsharp_input_event_assign_mouse(event, r_event->button_mask, r_event->position, r_event->global_position);
+	r_event->relative = event->get_relative();
+	r_event->screen_relative = event->get_relative_screen_position();
+	r_event->velocity = event->get_velocity();
+	r_event->screen_velocity = event->get_screen_velocity();
+	r_event->tilt = event->get_tilt();
+	r_event->pressure = event->get_pressure();
+	r_event->pen_inverted = godotsharp_input_event_bool(event->get_pen_inverted());
+}
+
+void godotsharp_input_event_as_mouse_button(Object *p_event, godotsharp_input_event_mouse_button_marshaled *r_event) {
+	if (r_event != nullptr) {
+		*r_event = {};
+	}
+	ERR_FAIL_NULL(p_event);
+	ERR_FAIL_NULL(r_event);
+
+	const InputEventMouseButton *event = Object::cast_to<InputEventMouseButton>(p_event);
+	ERR_FAIL_NULL(event);
+
+	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
+	godotsharp_input_event_assign_window(event, r_event->window_id);
+	godotsharp_input_event_assign_modifiers(event,
+			r_event->shift_pressed,
+			r_event->alt_pressed,
+			r_event->ctrl_pressed,
+			r_event->meta_pressed,
+			r_event->command_or_control_autoremap);
+	godotsharp_input_event_assign_mouse(event, r_event->button_mask, r_event->position, r_event->global_position);
+	r_event->factor = event->get_factor();
+	r_event->button_index = (int32_t)event->get_button_index();
+	r_event->pressed = godotsharp_input_event_bool(event->is_pressed());
+	r_event->double_click = godotsharp_input_event_bool(event->is_double_click());
+}
+
+void godotsharp_input_event_as_key(Object *p_event, godotsharp_input_event_key_marshaled *r_event) {
+	if (r_event != nullptr) {
+		*r_event = {};
+	}
+	ERR_FAIL_NULL(p_event);
+	ERR_FAIL_NULL(r_event);
+
+	const InputEventKey *event = Object::cast_to<InputEventKey>(p_event);
+	ERR_FAIL_NULL(event);
+
+	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
+	godotsharp_input_event_assign_window(event, r_event->window_id);
+	godotsharp_input_event_assign_modifiers(event,
+			r_event->shift_pressed,
+			r_event->alt_pressed,
+			r_event->ctrl_pressed,
+			r_event->meta_pressed,
+			r_event->command_or_control_autoremap);
+	r_event->keycode = (int32_t)event->get_keycode();
+	r_event->physical_keycode = (int32_t)event->get_physical_keycode();
+	r_event->key_label = (int32_t)event->get_key_label();
+	r_event->unicode = (uint32_t)event->get_unicode();
+	r_event->location = (int32_t)event->get_location();
+	r_event->pressed = godotsharp_input_event_bool(event->is_pressed());
+	r_event->echo = godotsharp_input_event_bool(event->is_echo());
 }
 
 MethodBind *godotsharp_method_bind_get_method(const StringName *p_classname, const StringName *p_methodname) {
@@ -1670,6 +2416,25 @@ static const void *unmanaged_callbacks[]{
 	(void *)godotsharp_color_get_ok_hsl_h,
 	(void *)godotsharp_color_get_ok_hsl_s,
 	(void *)godotsharp_color_get_ok_hsl_l,
+	(void *)godotsharp_physics_direct_space_state_2d_intersect_ray,
+	(void *)godotsharp_physics_direct_space_state_2d_intersect_point,
+	(void *)godotsharp_physics_direct_space_state_2d_intersect_shape,
+	(void *)godotsharp_physics_direct_space_state_2d_cast_motion,
+	(void *)godotsharp_physics_direct_space_state_2d_collide_shape,
+	(void *)godotsharp_physics_direct_space_state_2d_rest_info,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_all,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_batch,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_point,
+	(void *)godotsharp_physics_direct_space_state_3d_intersect_shape,
+	(void *)godotsharp_physics_direct_space_state_3d_cast_motion,
+	(void *)godotsharp_physics_direct_space_state_3d_collide_shape,
+	(void *)godotsharp_physics_direct_space_state_3d_rest_info,
+	(void *)godotsharp_input_event_get_fast_type,
+	(void *)godotsharp_input_event_as_mouse_motion,
+	(void *)godotsharp_input_event_as_mouse_button,
+	(void *)godotsharp_input_event_as_key,
 	(void *)godotsharp_method_bind_ptrcall,
 	(void *)godotsharp_method_bind_call,
 	(void *)godotsharp_variant_new_string_name,

@@ -38,6 +38,13 @@ TEST_FORCE_LINK(test_node)
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#ifndef _3D_DISABLED
+#include "scene/3d/node_3d.h"
+#include "scene/3d/skeleton_3d.h"
+#include "scene/animation/animation_player.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/animation_library.h"
+#endif
 #include "scene/resources/packed_scene.h"
 #include "tests/test_utils.h"
 
@@ -60,10 +67,17 @@ protected:
 			case NOTIFICATION_PROCESS: {
 				process_counter++;
 				push_self();
+				push_notification(p_what);
+			} break;
+			case NOTIFICATION_LATE_PROCESS: {
+				late_process_counter++;
+				push_self();
+				push_notification(p_what);
 			} break;
 			case NOTIFICATION_PHYSICS_PROCESS: {
 				physics_process_counter++;
 				push_self();
+				push_notification(p_what);
 			} break;
 		}
 	}
@@ -85,16 +99,24 @@ private:
 		}
 	}
 
+	void push_notification(int p_what) {
+		if (notification_list) {
+			notification_list->push_back(p_what);
+		}
+	}
+
 public:
 	int internal_process_counter = 0;
 	int internal_physics_process_counter = 0;
 	int process_counter = 0;
+	int late_process_counter = 0;
 	int physics_process_counter = 0;
 
 	Node *exported_node = nullptr;
 	Array exported_nodes;
 
 	List<Node *> *callback_list = nullptr;
+	List<int> *notification_list = nullptr;
 
 	void set_exported_node(Node *p_node) { exported_node = p_node; }
 	Node *get_exported_node() const { return exported_node; }
@@ -109,6 +131,52 @@ public:
 		add_child(internal, false, INTERNAL_MODE_BACK);
 	}
 };
+
+#ifndef _3D_DISABLED
+class SkeletonPoseDriver : public Node {
+	GDCLASS(SkeletonPoseDriver, Node);
+
+protected:
+	static void _bind_methods() {}
+
+	void _notification(int p_what) {
+		if (p_what == NOTIFICATION_PROCESS) {
+			ERR_FAIL_NULL(skeleton);
+			skeleton->set_bone_pose_position(bone_idx, target_pose_position);
+		}
+	}
+
+public:
+	Skeleton3D *skeleton = nullptr;
+	int bone_idx = -1;
+	Vector3 target_pose_position;
+};
+
+class LateStateProbe : public Node {
+	GDCLASS(LateStateProbe, Node);
+
+protected:
+	static void _bind_methods() {}
+
+	void _notification(int p_what) {
+		if (p_what == NOTIFICATION_LATE_PROCESS) {
+			late_process_counter++;
+			ERR_FAIL_NULL(animated_node);
+			ERR_FAIL_NULL(skeleton);
+			animated_position = animated_node->get_position();
+			skeleton_global_pose_position = skeleton->get_bone_global_pose(bone_idx).origin;
+		}
+	}
+
+public:
+	Node3D *animated_node = nullptr;
+	Skeleton3D *skeleton = nullptr;
+	int bone_idx = -1;
+	int late_process_counter = 0;
+	Vector3 animated_position;
+	Vector3 skeleton_global_pose_position;
+};
+#endif
 
 TEST_CASE("[SceneTree][Node] Testing node operations with a very simple scene tree") {
 	Node *node = memnew(Node);
@@ -649,6 +717,18 @@ TEST_CASE("[Node] Processing checks") {
 		CHECK_FALSE(node->is_processing());
 	}
 
+	SUBCASE("Late processing") {
+		CHECK_FALSE(node->is_processing_late());
+
+		node->set_process_late(true);
+
+		CHECK(node->is_processing_late());
+
+		node->set_process_late(false);
+
+		CHECK_FALSE(node->is_processing_late());
+	}
+
 	SUBCASE("Physics processing") {
 		CHECK_FALSE(node->is_physics_processing());
 
@@ -746,6 +826,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 
 	SUBCASE("No process") {
 		CHECK_EQ(0, node->process_counter);
+		CHECK_EQ(0, node->late_process_counter);
 		CHECK_EQ(0, node->physics_process_counter);
 	}
 
@@ -754,6 +835,18 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->process(0);
 
 		CHECK_EQ(1, node->process_counter);
+		CHECK_EQ(0, node->late_process_counter);
+		CHECK_EQ(0, node->physics_process_counter);
+		CHECK_EQ(0, node->internal_process_counter);
+		CHECK_EQ(0, node->internal_physics_process_counter);
+	}
+
+	SUBCASE("Late process") {
+		node->set_process_late(true);
+		SceneTree::get_singleton()->process(0);
+
+		CHECK_EQ(0, node->process_counter);
+		CHECK_EQ(1, node->late_process_counter);
 		CHECK_EQ(0, node->physics_process_counter);
 		CHECK_EQ(0, node->internal_process_counter);
 		CHECK_EQ(0, node->internal_physics_process_counter);
@@ -764,6 +857,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(0, node->process_counter);
+		CHECK_EQ(0, node->late_process_counter);
 		CHECK_EQ(1, node->physics_process_counter);
 		CHECK_EQ(0, node->internal_process_counter);
 		CHECK_EQ(0, node->internal_physics_process_counter);
@@ -776,9 +870,29 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(1, node->process_counter);
+		CHECK_EQ(0, node->late_process_counter);
 		CHECK_EQ(1, node->physics_process_counter);
 		CHECK_EQ(0, node->internal_process_counter);
 		CHECK_EQ(0, node->internal_physics_process_counter);
+	}
+
+	SUBCASE("Process and late process") {
+		List<int> notification_order;
+		node->notification_list = &notification_order;
+		node->set_process(true);
+		node->set_process_late(true);
+		SceneTree::get_singleton()->process(0);
+
+		CHECK_EQ(1, node->process_counter);
+		CHECK_EQ(1, node->late_process_counter);
+		CHECK_EQ(0, node->physics_process_counter);
+		CHECK_EQ(0, node->internal_process_counter);
+		CHECK_EQ(0, node->internal_physics_process_counter);
+		REQUIRE_EQ(2, notification_order.size());
+		List<int>::Element *E = notification_order.front();
+		CHECK_EQ(E->get(), Node::NOTIFICATION_PROCESS);
+		E = E->next();
+		CHECK_EQ(E->get(), Node::NOTIFICATION_LATE_PROCESS);
 	}
 
 	SUBCASE("Internal, normal and physics process") {
@@ -788,6 +902,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(0, node->process_counter);
+		CHECK_EQ(0, node->late_process_counter);
 		CHECK_EQ(0, node->physics_process_counter);
 		CHECK_EQ(1, node->internal_process_counter);
 		CHECK_EQ(1, node->internal_physics_process_counter);
@@ -795,6 +910,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 
 	SUBCASE("All processing") {
 		node->set_process(true);
+		node->set_process_late(true);
 		node->set_physics_process(true);
 		node->set_process_internal(true);
 		node->set_physics_process_internal(true);
@@ -802,6 +918,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(1, node->process_counter);
+		CHECK_EQ(1, node->late_process_counter);
 		CHECK_EQ(1, node->physics_process_counter);
 		CHECK_EQ(1, node->internal_process_counter);
 		CHECK_EQ(1, node->internal_physics_process_counter);
@@ -809,6 +926,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 
 	SUBCASE("All processing twice") {
 		node->set_process(true);
+		node->set_process_late(true);
 		node->set_physics_process(true);
 		node->set_process_internal(true);
 		node->set_physics_process_internal(true);
@@ -818,6 +936,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(2, node->process_counter);
+		CHECK_EQ(2, node->late_process_counter);
 		CHECK_EQ(2, node->physics_process_counter);
 		CHECK_EQ(2, node->internal_process_counter);
 		CHECK_EQ(2, node->internal_physics_process_counter);
@@ -825,6 +944,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 
 	SUBCASE("Enable and disable processing") {
 		node->set_process(true);
+		node->set_process_late(true);
 		node->set_physics_process(true);
 		node->set_process_internal(true);
 		node->set_physics_process_internal(true);
@@ -832,6 +952,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		node->set_process(false);
+		node->set_process_late(false);
 		node->set_physics_process(false);
 		node->set_process_internal(false);
 		node->set_physics_process_internal(false);
@@ -839,6 +960,7 @@ TEST_CASE("[SceneTree][Node] Test the processing") {
 		SceneTree::get_singleton()->physics_process(0);
 
 		CHECK_EQ(1, node->process_counter);
+		CHECK_EQ(1, node->late_process_counter);
 		CHECK_EQ(1, node->physics_process_counter);
 		CHECK_EQ(1, node->internal_process_counter);
 		CHECK_EQ(1, node->internal_physics_process_counter);
@@ -912,10 +1034,89 @@ TEST_CASE("[SceneTree][Node] Test the process priority") {
 		CHECK_EQ(E->get(), node3);
 	}
 
+	SUBCASE("Late process priority") {
+		node->set_process_late(true);
+		node->set_process_priority(20);
+		node2->set_process_late(true);
+		node2->set_process_priority(10);
+		node3->set_process_late(true);
+		node3->set_process_priority(40);
+		node4->set_process_late(true);
+		node4->set_process_priority(30);
+
+		SceneTree::get_singleton()->process(0);
+
+		CHECK_EQ(4, process_order.size());
+		List<Node *>::Element *E = process_order.front();
+		CHECK_EQ(E->get(), node2);
+		E = E->next();
+		CHECK_EQ(E->get(), node);
+		E = E->next();
+		CHECK_EQ(E->get(), node4);
+		E = E->next();
+		CHECK_EQ(E->get(), node3);
+	}
+
 	memdelete(node);
 	memdelete(node2);
 	memdelete(node3);
 	memdelete(node4);
 }
+
+#ifndef _3D_DISABLED
+TEST_CASE("[SceneTree][Node] Late process sees final idle animation and skeleton state") {
+	Node3D *scene = memnew(Node3D);
+	SceneTree::get_singleton()->get_root()->add_child(scene);
+
+	Node3D *animated = memnew(Node3D);
+	animated->set_name("Animated");
+	scene->add_child(animated);
+
+	Skeleton3D *skeleton = memnew(Skeleton3D);
+	skeleton->set_name("Skeleton");
+	const int bone_idx = skeleton->add_bone("root");
+	skeleton->set_bone_rest(bone_idx, Transform3D());
+	skeleton->set_bone_pose_position(bone_idx, Vector3());
+	scene->add_child(skeleton);
+
+	AnimationPlayer *animation_player = memnew(AnimationPlayer);
+	animation_player->set_auto_capture(false);
+	scene->add_child(animation_player);
+
+	Ref<Animation> animation = memnew(Animation);
+	animation->set_length(1.0);
+	const int track_idx = animation->add_track(Animation::TYPE_POSITION_3D);
+	animation->track_set_path(track_idx, NodePath("Animated:position"));
+	animation->position_track_insert_key(track_idx, 0.0, Vector3());
+	animation->position_track_insert_key(track_idx, 1.0, Vector3(4, 0, 0));
+
+	Ref<AnimationLibrary> animation_library = memnew(AnimationLibrary);
+	CHECK_EQ(animation_library->add_animation("move", animation), OK);
+	CHECK_EQ(animation_player->add_animation_library(StringName(), animation_library), OK);
+
+	SkeletonPoseDriver *driver = memnew(SkeletonPoseDriver);
+	driver->skeleton = skeleton;
+	driver->bone_idx = bone_idx;
+	driver->target_pose_position = Vector3(0, 2, 0);
+	driver->set_process(true);
+	scene->add_child(driver);
+
+	LateStateProbe *probe = memnew(LateStateProbe);
+	probe->animated_node = animated;
+	probe->skeleton = skeleton;
+	probe->bone_idx = bone_idx;
+	probe->set_process_late(true);
+	scene->add_child(probe);
+
+	animation_player->play("move");
+	SceneTree::get_singleton()->process(0.5);
+
+	CHECK_EQ(1, probe->late_process_counter);
+	CHECK(probe->animated_position.is_equal_approx(Vector3(2, 0, 0)));
+	CHECK(probe->skeleton_global_pose_position.is_equal_approx(Vector3(0, 2, 0)));
+
+	memdelete(scene);
+}
+#endif
 
 } // namespace TestNode

@@ -9,7 +9,7 @@
 		[b]Scene tree:[/b] The [SceneTree] contains the active tree of nodes. When a node is added to the scene tree, it receives the [constant NOTIFICATION_ENTER_TREE] notification and its [method _enter_tree] callback is triggered. Child nodes are always added [i]after[/i] their parent node, i.e. the [method _enter_tree] callback of a parent node will be triggered before its child's.
 		Once all nodes have been added in the scene tree, they receive the [constant NOTIFICATION_READY] notification and their respective [method _ready] callbacks are triggered. For groups of nodes, the [method _ready] callback is called in reverse order, starting with the children and moving up to the parent nodes.
 		This means that when adding a node to the scene tree, the following order will be used for the callbacks: [method _enter_tree] of the parent, [method _enter_tree] of the children, [method _ready] of the children and finally [method _ready] of the parent (recursively for the entire scene tree).
-		[b]Processing:[/b] Nodes can override the "process" state, so that they receive a callback on each frame requesting them to process (do something). Normal processing (callback [method _process], toggled with [method set_process]) happens as fast as possible and is dependent on the frame rate, so the processing time [i]delta[/i] (in seconds) is passed as an argument. Physics processing (callback [method _physics_process], toggled with [method set_physics_process]) happens a fixed number of times per second (60 by default) and is useful for code related to the physics engine.
+		[b]Processing:[/b] Nodes can override the "process" state, so that they receive a callback on each frame requesting them to process (do something). Normal processing (callback [method _process], toggled with [method set_process]) happens as fast as possible and is dependent on the frame rate, so the processing time [i]delta[/i] (in seconds) is passed as an argument. Late processing (callback [method _late_process], toggled with [method set_process_late]) runs at the very end of the idle frame, after the normal process step and deferred animation and skeleton updates, but still before rendering. Physics processing (callback [method _physics_process], toggled with [method set_physics_process]) happens a fixed number of times per second (60 by default) and is useful for code related to the physics engine.
 		Nodes can also process input events. When present, the [method _input] function will be called for each input that the program receives. In many cases, this can be overkill (unless used for simple projects), and the [method _unhandled_input] function might be preferred; it is called when the input event was not handled by anyone else (typically, GUI [Control] nodes), ensuring that the node only receives the events that were meant for it.
 		To keep track of the scene hierarchy (especially when instantiating scenes into other scenes), an "owner" can be set for the node with the [member owner] property. This keeps track of who instantiated what. This is mostly useful when writing editors and tools, though.
 		Finally, when a node is freed with [method Object.free] or [method queue_free], it will also free all its children.
@@ -90,6 +90,20 @@
 				Corresponds to the [constant NOTIFICATION_PHYSICS_PROCESS] notification in [method Object._notification].
 				[b]Note:[/b] This method is only called if the node is present in the scene tree (i.e. if it's not an orphan).
 				[b]Note:[/b] Accumulated [param delta] may diverge from real world seconds.
+			</description>
+		</method>
+		<method name="_late_process" qualifiers="virtual">
+			<return type="void" />
+			<param index="0" name="delta" type="float" />
+			<description>
+				Called on each idle frame after [method _process] and after deferred animation and skeleton updates have been processed, but still prior to rendering. [param delta] is the time between frames in seconds.
+				It is only called if late processing is enabled for this Node, which is done automatically if this method is overridden, and can be toggled with [method set_process_late].
+				Processing happens in order of [member process_priority], lower priority values are called first. Nodes with the same priority are processed in tree order, or top to bottom as seen in the editor (also known as pre-order traversal).
+				Corresponds to the [constant NOTIFICATION_LATE_PROCESS] notification in [method Object._notification].
+				[b]Note:[/b] This method is only called if the node is present in the scene tree (i.e. if it's not an orphan).
+				[b]Note:[/b] When the engine is struggling and the frame rate is lowered, [param delta] will increase. When [param delta] is increased, it's capped at a maximum of [member Engine.time_scale] * [member Engine.max_physics_steps_per_frame] / [member Engine.physics_ticks_per_second]. As a result, accumulated [param delta] may not represent real world time.
+				[b]Note:[/b] When [code]--fixed-fps[/code] is enabled or the engine is running in Movie Maker mode (see [MovieWriter]), process [param delta] will always be the same for every frame, regardless of how much time the frame took to render.
+				[b]Note:[/b] Frame delta may be post-processed by [member OS.delta_smoothing] if this is enabled for the project.
 			</description>
 		</method>
 		<method name="_process" qualifiers="virtual">
@@ -231,7 +245,7 @@
 			<return type="Variant" />
 			<param index="0" name="method" type="StringName" />
 			<description>
-				This function is similar to [method Object.call_deferred] except that the call will take place when the node thread group is processed. If the node thread group processes in sub-threads, then the call will be done on that thread, right before [constant NOTIFICATION_PROCESS] or [constant NOTIFICATION_PHYSICS_PROCESS], the [method _process] or [method _physics_process] or their internal versions are called.
+				This function is similar to [method Object.call_deferred] except that the call will take place when the node thread group is processed. If the node thread group processes in sub-threads, then the call will be done on that thread, right before [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], or [constant NOTIFICATION_PHYSICS_PROCESS], the [method _process], [method _late_process], or [method _physics_process] or their internal versions are called.
 			</description>
 		</method>
 		<method name="call_thread_safe" qualifiers="vararg">
@@ -707,6 +721,12 @@
 				Returns [code]true[/code] if processing is enabled (see [method set_process]).
 			</description>
 		</method>
+		<method name="is_processing_late" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if late processing is enabled (see [method set_process_late]).
+			</description>
+		</method>
 		<method name="is_processing_input" qualifiers="const">
 			<return type="bool" />
 			<description>
@@ -965,7 +985,16 @@
 			<description>
 				If set to [code]true[/code], enables processing. When a node is being processed, it will receive a [constant NOTIFICATION_PROCESS] on every drawn frame (and the [method _process] callback will be called if it exists).
 				[b]Note:[/b] If [method _process] is overridden, this will be automatically enabled before [method _ready] is called.
-				[b]Note:[/b] This method only affects the [method _process] callback, i.e. it has no effect on other callbacks like [method _physics_process]. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
+				[b]Note:[/b] This method only affects the [method _process] callback, i.e. it has no effect on other callbacks like [method _late_process] or [method _physics_process]. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
+			</description>
+		</method>
+		<method name="set_process_late">
+			<return type="void" />
+			<param index="0" name="enable" type="bool" />
+			<description>
+				If set to [code]true[/code], enables late processing. When a node is being processed late, it will receive a [constant NOTIFICATION_LATE_PROCESS] on every drawn frame after [method _process] and deferred animation and skeleton updates have completed (and the [method _late_process] callback will be called if it exists).
+				[b]Note:[/b] If [method _late_process] is overridden, this will be automatically enabled before [method _ready] is called.
+				[b]Note:[/b] This method only affects the [method _late_process] callback. If you want to disable all processing for the node, set [member process_mode] to [constant PROCESS_MODE_DISABLED].
 			</description>
 		</method>
 		<method name="set_process_input">
@@ -1071,10 +1100,10 @@
 			Similar to [member process_priority] but for [constant NOTIFICATION_PHYSICS_PROCESS], [method _physics_process], or [constant NOTIFICATION_INTERNAL_PHYSICS_PROCESS].
 		</member>
 		<member name="process_priority" type="int" setter="set_process_priority" getter="get_process_priority" default="0">
-			The node's execution order of the process callbacks ([method _process], [constant NOTIFICATION_PROCESS], and [constant NOTIFICATION_INTERNAL_PROCESS]). Nodes whose priority value is [i]lower[/i] call their process callbacks first, regardless of tree order.
+			The node's execution order of the process callbacks ([method _process], [method _late_process], [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], and [constant NOTIFICATION_INTERNAL_PROCESS]). Nodes whose priority value is [i]lower[/i] call their process callbacks first, regardless of tree order.
 		</member>
 		<member name="process_thread_group" type="int" setter="set_process_thread_group" getter="get_process_thread_group" enum="Node.ProcessThreadGroup" default="0">
-			Set the process thread group for this node (basically, whether it receives [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_PHYSICS_PROCESS], [method _process] or [method _physics_process] (and the internal versions) on the main thread or in a sub-thread.
+			Set the process thread group for this node (basically, whether it receives [constant NOTIFICATION_PROCESS], [constant NOTIFICATION_LATE_PROCESS], [constant NOTIFICATION_PHYSICS_PROCESS], [method _process], [method _late_process], or [method _physics_process] (and the internal versions) on the main thread or in a sub-thread.
 			By default, the thread group is [constant PROCESS_THREAD_GROUP_INHERIT], which means that this node belongs to the same thread group as the parent node. The thread groups means that nodes in a specific thread group will process together, separate to other thread groups (depending on [member process_thread_group_order]). If the value is set is [constant PROCESS_THREAD_GROUP_SUB_THREAD], this thread group will occur on a sub thread (not the main thread), otherwise if set to [constant PROCESS_THREAD_GROUP_MAIN_THREAD] it will process on the main thread. If there is not a parent or grandparent node set to something other than inherit, the node will belong to the [i]default thread group[/i]. This default group will process on the main thread and its group order is 0.
 			During processing in a sub-thread, accessing most functions in nodes outside the thread group is forbidden (and it will result in an error in debug mode). Use [method Object.call_deferred], [method call_thread_safe], [method call_deferred_thread_group] and the likes in order to communicate from the thread groups to the main thread (or to other thread groups).
 			To better understand process thread groups, the idea is that any node set to any other value than [constant PROCESS_THREAD_GROUP_INHERIT] will include any child (and grandchild) nodes set to inherit into its process thread group. This means that the processing of all the nodes in the group will happen together, at the same time as the node including them.
@@ -1227,6 +1256,9 @@
 		</constant>
 		<constant name="NOTIFICATION_ENABLED" value="29">
 			Notification received when the node is enabled again after being disabled. See [constant PROCESS_MODE_DISABLED].
+		</constant>
+		<constant name="NOTIFICATION_LATE_PROCESS" value="30">
+			Notification received from the tree every rendered frame when [method is_processing_late] returns [code]true[/code]. See [method _late_process].
 		</constant>
 		<constant name="NOTIFICATION_RESET_PHYSICS_INTERPOLATION" value="2001">
 			Notification received when [method reset_physics_interpolation] is called on the node or its ancestors.

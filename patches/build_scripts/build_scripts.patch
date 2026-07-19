@@ -1,176 +1,186 @@
-diff --git forkSrcPrefix/build_linux.sh forkDstPrefix/build_linux.sh
-new file mode 100644
-index 0000000000000000000000000000000000000000..dd622be4e4138f2c8ff7dde608fcf6b8090c3cc8
+diff --git a/build_linux.sh b/build_linux.sh
+new file mode 100755
+index 0000000000..f67b883bf0
 --- /dev/null
-+++ forkDstPrefix/build_linux.sh
-@@ -0,0 +1,84 @@
++++ b/build_linux.sh
+@@ -0,0 +1,83 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
-+# --- Configuration ---
 +NUGET_SOURCE_NAME="nuget_godot_cache"
 +NUGET_LOCAL_DIR="nuget_godot_cache"
-+PRECISION="double"     # "single" or "double"
-+USE_LLVM="yes"         # "yes" or "no"
-+# --------------------
++PRECISION="double"
++USE_LLVM="yes"
 +
 +SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +cd "$SCRIPT_DIR"
 +
-+mkdir -p "$NUGET_LOCAL_DIR"
++mkdir -p "$NUGET_LOCAL_DIR" "bin/template"
 +
 +echo "==> Setting up local NuGet source..."
 +dotnet nuget remove source "$NUGET_SOURCE_NAME" >/dev/null 2>&1 || true
 +dotnet nuget add source "$SCRIPT_DIR/$NUGET_LOCAL_DIR" --name "$NUGET_SOURCE_NAME" >/dev/null
 +
-+# Godot uses specific arch names. Normalize common Linux outputs.
-+UNAME_ARCH="$(uname -m)"
-+case "$UNAME_ARCH" in
-+  x86_64) ARCH="x86_64" ;;
-+  aarch64|arm64) ARCH="arm64" ;;
-+  *) echo "ERROR: Unsupported architecture: $UNAME_ARCH"; exit 1 ;;
++case "$(uname -m)" in
++    x86_64) ARCH="x86_64" ;;
++    aarch64|arm64) ARCH="arm64" ;;
++    *) echo "ERROR: Unsupported architecture: $(uname -m)"; exit 1 ;;
 +esac
 +
 +if [[ "$USE_LLVM" != "yes" && "$USE_LLVM" != "no" ]]; then
-+  echo "ERROR: USE_LLVM must be 'yes' or 'no' (got: $USE_LLVM)"
-+  exit 1
-+fi
-+
-+echo "==> Building Godot editor for Linux (arch: $ARCH, precision: $PRECISION, use_llvm: $USE_LLVM)..."
-+scons -j"$(nproc)" \
-+  platform=linuxbsd \
-+  use_llvm="$USE_LLVM" \
-+  arch="$ARCH" \
-+  module_mono_enabled=yes \
-+  precision="$PRECISION"
-+
-+# Compute the expected output name based on use_llvm.
-+LLVM_SUFFIX=""
-+if [[ "$USE_LLVM" == "yes" ]]; then
-+  LLVM_SUFFIX=".llvm"
-+fi
-+
-+EDITOR_BINARY="bin/godot.linuxbsd.editor.${PRECISION}.${ARCH}${LLVM_SUFFIX}.mono"
-+
-+# If naming differs due to branch/version, fall back to discovery.
-+if [[ ! -f "$EDITOR_BINARY" ]]; then
-+  echo "==> Editor binary not found at: $EDITOR_BINARY"
-+  echo "==> Trying to locate a matching Linux editor binary in ./bin ..."
-+
-+  # Prefer exact precision/arch, accept either .mono or .llvm.mono, but avoid templates.
-+  EDITOR_BINARY="$(
-+    ls -1 \
-+      "bin/godot.linuxbsd.editor.${PRECISION}.${ARCH}.mono" \
-+      "bin/godot.linuxbsd.editor.${PRECISION}.${ARCH}.llvm.mono" \
-+      2>/dev/null \
-+    | head -n 1 || true
-+  )"
-+
-+  # Last resort: broader pattern match (still anchored to editor + arch).
-+  if [[ -z "${EDITOR_BINARY:-}" || ! -f "$EDITOR_BINARY" ]]; then
-+    EDITOR_BINARY="$(ls -1 bin/godot.linuxbsd.editor.*."$ARCH".*.mono 2>/dev/null | head -n 1 || true)"
-+  fi
-+fi
-+
-+if [[ -z "${EDITOR_BINARY:-}" || ! -f "$EDITOR_BINARY" ]]; then
-+  echo "ERROR: Could not find built editor binary in ./bin"
-+  ls -la bin || true
-+  exit 1
-+fi
-+
-+echo "==> Generating C# glue using: $EDITOR_BINARY"
-+"$EDITOR_BINARY" --headless --generate-mono-glue modules/mono/glue
-+
-+echo "==> Building C# assemblies and pushing to local NuGet source..."
-+python3 "./modules/mono/build_scripts/build_assemblies.py" \
-+  --godot-output-dir="./bin" \
-+  --push-nupkgs-local "$NUGET_SOURCE_NAME" \
-+  --precision="$PRECISION"
-+
-+echo "==> Build complete."
-diff --git forkSrcPrefix/build_mac.sh forkDstPrefix/build_mac.sh
-new file mode 100644
-index 0000000000000000000000000000000000000000..fb090cd671f1d7fde9838d2cbc89c4238563024a
---- /dev/null
-+++ forkDstPrefix/build_mac.sh
-@@ -0,0 +1,53 @@
-+#!/usr/bin/env bash
-+
-+# Exit immediately if a command exits with a non-zero status.
-+set -e
-+
-+# --- Configuration ---
-+NUGET_SOURCE_NAME="nuget_godot_cache"
-+NUGET_LOCAL_DIR="nuget_godot_cache" # The local folder to store packages
-+PRECISION="double"
-+# --------------------
-+
-+# Get the absolute path to the directory where this script is located
-+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-+
-+# Change to the script's directory to ensure all relative paths are correct
-+cd "$SCRIPT_DIR"
-+
-+# 1. Add the local NuGet source
-+#    - We use $SCRIPT_DIR to replicate the functionality of Windows' %~dp0
-+#    - We first try to remove any existing source with the same name to avoid errors
-+echo "==> Setting up local NuGet source..."
-+dotnet nuget remove source "$NUGET_SOURCE_NAME" 2>/dev/null || true
-+dotnet nuget add source "$SCRIPT_DIR/$NUGET_LOCAL_DIR" --name "$NUGET_SOURCE_NAME"
-+
-+# 2. Build the editor using SCons for macOS
-+#    - Detect the architecture (arm64 for Apple Silicon, x86_64 for Intel)
-+#    - Change platform from 'windows' to 'macos'
-+#    - Add 'generate_bundle=yes' to create a proper Godot.app package
-+ARCH=$(uname -m)
-+echo "==> Building Godot editor for macOS (arch: $ARCH)..."
-+scons platform=macos arch="$ARCH" module_mono_enabled=yes precision="$PRECISION" generate_bundle=yes
-+
-+# 3. Generate the C# glue code
-+#    - The executable path is different on macOS (no .exe extension, platform/arch in name)
-+EDITOR_BINARY="bin/godot.macos.editor.$PRECISION.$ARCH.mono"
-+echo "==> Generating C# glue using: $EDITOR_BINARY"
-+if [[ ! -f "$EDITOR_BINARY" ]]; then
-+    echo "ERROR: Editor binary not found. SCons build may have failed."
++    echo "ERROR: USE_LLVM must be 'yes' or 'no' (got: $USE_LLVM)"
 +    exit 1
 +fi
-+"$EDITOR_BINARY" --headless --generate-mono-glue modules/mono/glue
 +
-+# 4. Build the C# assemblies and push them to our local NuGet source
-+#    - On macOS/Linux, it's best practice to explicitly call 'python3'
-+echo "==> Building C# assemblies and pushing to local NuGet source..."
-+python3 "./modules/mono/build_scripts/build_assemblies.py" \
-+    --godot-output-dir="./bin" \
-+    --push-nupkgs-local "$NUGET_SOURCE_NAME" \
-+    --precision="$PRECISION"
++SCONS=(
++    python3 -m SCons
++    -j"$(nproc)"
++    platform=linuxbsd
++    arch="$ARCH"
++    use_llvm="$USE_LLVM"
++    module_mono_enabled=yes
++    precision="$PRECISION"
++)
 +
-+# 5. Pause for user to see the output (equivalent to Windows 'pause')
++echo "==> Building Godot editor for Linux (arch: $ARCH, precision: $PRECISION, use_llvm: $USE_LLVM)..."
++"${SCONS[@]}" target=editor debug_symbols=yes
++
++LLVM_SUFFIX=""
++if [[ "$USE_LLVM" == "yes" ]]; then
++    LLVM_SUFFIX=".llvm"
++fi
++
++PRECISION_SUFFIX=""
++if [[ "$PRECISION" == "double" ]]; then
++    PRECISION_SUFFIX=".double"
++fi
++
++EDITOR_BINARY="bin/godot.linuxbsd.editor${PRECISION_SUFFIX}.${ARCH}${LLVM_SUFFIX}.mono"
++if [[ ! -f "$EDITOR_BINARY" ]]; then
++    echo "ERROR: Editor binary not found: $EDITOR_BINARY"
++    exit 1
++fi
++
++echo "==> Generating C# glue..."
++"$EDITOR_BINARY" --headless --generate-mono-glue "$SCRIPT_DIR/modules/mono/glue"
++
++echo "==> Building C# assemblies..."
++python3 "$SCRIPT_DIR/modules/mono/build_scripts/build_assemblies.py" \
++    --godot-output-dir="$SCRIPT_DIR/bin" \
++    --push-nupkgs-local "$SCRIPT_DIR/$NUGET_LOCAL_DIR" \
++    --precision="$PRECISION" \
++    --godot-platform=linuxbsd
++
++echo "==> Building Linux export templates..."
++"${SCONS[@]}" target=template_debug debug_symbols=yes
++"${SCONS[@]}" target=template_release debug_symbols=no
++
++DEBUG_TEMPLATE="bin/godot.linuxbsd.template_debug${PRECISION_SUFFIX}.${ARCH}${LLVM_SUFFIX}.mono"
++RELEASE_TEMPLATE="bin/godot.linuxbsd.template_release${PRECISION_SUFFIX}.${ARCH}${LLVM_SUFFIX}.mono"
++
++if [[ ! -f "$DEBUG_TEMPLATE" || ! -f "$RELEASE_TEMPLATE" ]]; then
++    echo "ERROR: One or more Linux export-template binaries were not generated."
++    exit 1
++fi
++
++mv -f "$DEBUG_TEMPLATE" "bin/template/linux_debug.${ARCH}"
++mv -f "$RELEASE_TEMPLATE" "bin/template/linux_release.${ARCH}"
++
 +echo "==> Build complete."
-+read -p "Press Enter to continue..."
-\ No newline at end of file
-diff --git forkSrcPrefix/build_windows.bat forkDstPrefix/build_windows.bat
-new file mode 100644
-index 0000000000000000000000000000000000000000..7d3307781f82fd61277f50e4fea791e6e223f545
+diff --git a/build_mac.sh b/build_mac.sh
+new file mode 100755
+index 0000000000..5c07cb59f3
 --- /dev/null
-+++ forkDstPrefix/build_windows.bat
-@@ -0,0 +1,57 @@
++++ b/build_mac.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++NUGET_SOURCE_NAME="nuget_godot_cache"
++NUGET_LOCAL_DIR="nuget_godot_cache"
++PRECISION="double"
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++
++mkdir -p "$NUGET_LOCAL_DIR" "bin/template"
++
++echo "==> Setting up local NuGet source..."
++dotnet nuget remove source "$NUGET_SOURCE_NAME" >/dev/null 2>&1 || true
++dotnet nuget add source "$SCRIPT_DIR/$NUGET_LOCAL_DIR" --name "$NUGET_SOURCE_NAME" >/dev/null
++
++case "$(uname -m)" in
++    x86_64) ARCH="x86_64" ;;
++    arm64|aarch64) ARCH="arm64" ;;
++    *) echo "ERROR: Unsupported architecture: $(uname -m)"; exit 1 ;;
++esac
++
++SCONS=(
++    python3 -m SCons
++    platform=macos
++    module_mono_enabled=yes
++    precision="$PRECISION"
++)
++
++echo "==> Building Godot editor for macOS (arch: $ARCH, precision: $PRECISION)..."
++"${SCONS[@]}" target=editor arch="$ARCH" debug_symbols=yes
++
++PRECISION_SUFFIX=""
++if [[ "$PRECISION" == "double" ]]; then
++    PRECISION_SUFFIX=".double"
++fi
++
++EDITOR_BINARY="bin/godot.macos.editor${PRECISION_SUFFIX}.${ARCH}.mono"
++if [[ ! -f "$EDITOR_BINARY" ]]; then
++    echo "ERROR: Editor binary not found: $EDITOR_BINARY"
++    exit 1
++fi
++
++echo "==> Generating C# glue..."
++"$EDITOR_BINARY" --headless --generate-mono-glue "$SCRIPT_DIR/modules/mono/glue"
++
++echo "==> Building C# assemblies..."
++python3 "$SCRIPT_DIR/modules/mono/build_scripts/build_assemblies.py" \
++    --godot-output-dir="$SCRIPT_DIR/bin" \
++    --push-nupkgs-local "$SCRIPT_DIR/$NUGET_LOCAL_DIR" \
++    --precision="$PRECISION" \
++    --godot-platform=macos
++
++echo "==> Assembling the macOS editor bundle..."
++"${SCONS[@]}" target=editor arch="$ARCH" debug_symbols=yes generate_bundle=yes
++
++echo "==> Building universal macOS export templates..."
++"${SCONS[@]}" target=template_debug arch=x86_64 debug_symbols=yes
++"${SCONS[@]}" target=template_release arch=x86_64 debug_symbols=no
++"${SCONS[@]}" target=template_debug arch=arm64 debug_symbols=yes
++"${SCONS[@]}" target=template_release arch=arm64 debug_symbols=no generate_bundle=yes
++
++TEMPLATE_ZIP="bin/godot_macos_mono.zip"
++if [[ "$PRECISION" == "double" ]]; then
++    TEMPLATE_ZIP="bin/godot_macos_double_mono.zip"
++fi
++if [[ ! -f "$TEMPLATE_ZIP" ]]; then
++    echo "ERROR: macOS export-template archive not found: $TEMPLATE_ZIP"
++    exit 1
++fi
++
++mv -f "$TEMPLATE_ZIP" "bin/template/macos.zip"
++
++echo "==> Build complete."
+diff --git a/build_windows.bat b/build_windows.bat
+new file mode 100644
+index 0000000000..576a63bb1c
+--- /dev/null
++++ b/build_windows.bat
+@@ -0,0 +1,48 @@
 +@echo off
 +setlocal
 +
 +set "ROOT=%~dp0"
-+set "TRACY_DIR=%ROOT%tracy"
 +set "NUGET_CACHE=%ROOT%nuget_godot_cache"
 +set "EDITOR_EXE=%ROOT%bin\godot.windows.editor.double.x86_64.mono.exe"
 +
 +if not exist "%NUGET_CACHE%" mkdir "%NUGET_CACHE%"
-+
-+if not exist "%TRACY_DIR%\public\tracy\Tracy.hpp" (
-+    echo Tracy source not found at:
-+    echo   %TRACY_DIR%
-+    echo Expected:
-+    echo   %TRACY_DIR%\public\tracy\Tracy.hpp
-+    goto :fail
-+)
 +
 +dotnet nuget list source | findstr /C:"nuget_godot_cache" >nul
 +if errorlevel 1 (
@@ -180,8 +190,8 @@ index 0000000000000000000000000000000000000000..7d3307781f82fd61277f50e4fea791e6
 +
 +py -m SCons platform=windows target=editor arch=x86_64 ^
 +    module_mono_enabled=yes precision=double ^
-+    debug_symbols=yes ^
-+    profiler=tracy profiler_path=%TRACY_DIR%
++    debug_symbols=yes
++
 +if errorlevel 1 goto :fail
 +
 +if not exist "%EDITOR_EXE%" (
@@ -211,39 +221,29 @@ index 0000000000000000000000000000000000000000..7d3307781f82fd61277f50e4fea791e6
 +echo Build failed.
 +pause
 +exit /b 1
-\ No newline at end of file
-diff --git forkSrcPrefix/build_windows_export_templates.bat forkDstPrefix/build_windows_export_templates.bat
+warning: in the working copy of 'build_windows.bat', LF will be replaced by CRLF the next time Git touches it
+diff --git a/build_windows_export_templates.bat b/build_windows_export_templates.bat
 new file mode 100644
-index 0000000000000000000000000000000000000000..5cb507382ac0df0c660456d9be265775c63817f1
+index 0000000000..60f3873c49
 --- /dev/null
-+++ forkDstPrefix/build_windows_export_templates.bat
-@@ -0,0 +1,44 @@
++++ b/build_windows_export_templates.bat
+@@ -0,0 +1,34 @@
 +@echo off
 +setlocal
 +
 +set "ROOT=%~dp0"
 +set "OUTDIR=%ROOT%bin\template"
-+set "TRACY_DIR=%ROOT%tracy"
 +
 +if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 +
-+if not exist "%TRACY_DIR%\public\tracy\Tracy.hpp" (
-+    echo Tracy source not found at:
-+    echo   %TRACY_DIR%
-+    echo Expected file:
-+    echo   %TRACY_DIR%\public\tracy\Tracy.hpp
-+    goto :fail
-+)
-+
-+rem Build templates with Tracy support
 +py -m SCons platform=windows target=template_debug arch=x86_64 ^
 +    module_mono_enabled=yes precision=double ^
-+    debug_symbols=yes ^
-+    profiler=tracy profiler_path=%TRACY_DIR%
++    debug_symbols=yes
 +if errorlevel 1 goto :fail
 +
 +py -m SCons platform=windows target=template_release arch=x86_64 ^
-+    module_mono_enabled=yes precision=double
++    module_mono_enabled=yes precision=double ^
++    debug_symbols=no
 +if errorlevel 1 goto :fail
 +
 +rem Move + rename (Debug)
@@ -262,4 +262,4 @@ index 0000000000000000000000000000000000000000..5cb507382ac0df0c660456d9be265775
 +echo Build failed.
 +pause
 +exit /b 1
-\ No newline at end of file
+warning: in the working copy of 'build_windows_export_templates.bat', LF will be replaced by CRLF the next time Git touches it

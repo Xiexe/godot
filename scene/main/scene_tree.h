@@ -100,8 +100,10 @@ private:
 	struct ProcessGroup {
 		CallQueue call_queue;
 		Vector<Node *> nodes;
+		Vector<Node *> late_nodes;
 		Vector<Node *> physics_nodes;
 		bool node_order_dirty = true;
+		bool late_node_order_dirty = true;
 		bool physics_node_order_dirty = true;
 		bool removed = false;
 		Node *owner = nullptr;
@@ -238,8 +240,11 @@ private:
 	void remove_from_group(const StringName &p_group, Node *p_node);
 
 	void _process_group(ProcessGroup *p_group, bool p_physics);
+	void _process_group_late(ProcessGroup *p_group);
 	void _process_groups_thread(uint32_t p_index, bool p_physics);
+	void _process_groups_thread_late(uint32_t p_index, bool p_unused);
 	void _process(bool p_physics);
+	void _process_late();
 
 	void _remove_process_group(Node *p_node);
 	void _add_process_group(Node *p_node);

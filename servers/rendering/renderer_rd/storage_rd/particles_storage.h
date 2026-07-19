@@ -160,6 +160,8 @@ private:
 	};
 
 	struct Particles {
+		static constexpr double SIMULATION_ORIGIN_REBASE_DISTANCE = 32768.0;
+
 		RSE::ParticlesMode mode = RSE::PARTICLES_MODE_3D;
 		bool inactive = true;
 		double inactive_time = 0.0;
@@ -245,6 +247,9 @@ private:
 		bool force_sub_emit = false;
 
 		Transform3D emission_transform;
+		Vector3 simulation_origin;
+		Vector3 previous_simulation_origin;
+		bool simulation_origin_valid = false;
 		Vector3 emitter_velocity;
 		float interp_to_end = 0.0;
 		float amount_ratio = 1.0;
@@ -278,6 +283,10 @@ private:
 	void _particles_ensure_unused_trail_buffer(Particles *particles);
 	void _particles_free_data(Particles *particles);
 	void _particles_update_buffers(Particles *particles);
+	bool _particles_uses_world_space_simulation_origin(const Particles *p_particles) const;
+	void _particles_initialize_simulation_origin(Particles *p_particles, const Vector3 &p_origin);
+	Vector3 _particles_update_simulation_origin(Particles *p_particles);
+	void _particles_rebase_frame_history(Particles *p_particles, const Vector3 &p_rebase_offset);
 
 	struct ParticlesShader {
 		struct PushConstant {
@@ -290,6 +299,12 @@ private:
 			uint32_t sub_emitter_mode;
 			uint32_t can_emit;
 			uint32_t trail_pass;
+
+			float rebase_offset[3];
+			uint32_t pad0;
+
+			float sub_emitter_position_offset[3];
+			uint32_t pad1;
 		};
 
 		ParticlesShaderRD shader;
@@ -516,6 +531,8 @@ public:
 		ERR_FAIL_NULL_V(particles, false);
 		return particles->frame_counter;
 	}
+
+	void particles_get_render_transforms(RID p_particles, Transform3D &r_transform, Transform3D &r_prev_transform) const;
 
 	_FORCE_INLINE_ uint32_t particles_get_amount(RID p_particles, uint32_t &r_trail_divisor) {
 		Particles *particles = particles_owner.get_or_null(p_particles);

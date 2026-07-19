@@ -34,6 +34,28 @@
 #include "core/object/class_db.h"
 #include "core/variant/typed_array.h"
 
+namespace {
+
+static _FORCE_INLINE_ void physics_direct_space_state_assign_ray_result(const PhysicsDirectSpaceState3D::RayResult &p_source, PhysicsDirectSpaceState3D::RayBatchResult &r_dest) {
+	r_dest.position = p_source.position;
+	r_dest.normal = p_source.normal;
+	r_dest.rid = p_source.rid;
+	r_dest.collider_id = (uint64_t)p_source.collider_id;
+	r_dest.shape = p_source.shape;
+	r_dest.face_index = p_source.face_index;
+}
+
+static _FORCE_INLINE_ void physics_direct_space_state_clear_ray_result(PhysicsDirectSpaceState3D::RayBatchResult &r_result) {
+	r_result.position = Vector3();
+	r_result.normal = Vector3();
+	r_result.rid = RID();
+	r_result.collider_id = 0;
+	r_result.shape = 0;
+	r_result.face_index = 0;
+}
+
+} // namespace
+
 void PhysicsServer3DRenderingServerHandler::set_vertex(int p_vertex_id, const Vector3 &p_vertex) {
 	GDVIRTUAL_CALL(_set_vertex, p_vertex_id, p_vertex);
 }
@@ -381,6 +403,89 @@ Dictionary PhysicsDirectSpaceState3D::_intersect_ray(RequiredParam<PhysicsRayQue
 	d["rid"] = result.rid;
 
 	return d;
+}
+
+int PhysicsDirectSpaceState3D::intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max) {
+	ERR_FAIL_COND_V(p_result_max < 0, 0);
+
+	if (p_result_max == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	RayResult result;
+	if (!intersect_ray(p_parameters, result)) {
+		return 0;
+	}
+
+	physics_direct_space_state_assign_ray_result(result, r_results[0]);
+	return 1;
+}
+
+int PhysicsDirectSpaceState3D::intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count) {
+	ERR_FAIL_COND_V(p_command_count < 0, 0);
+
+	if (p_command_count == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(p_commands, 0);
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	RayParameters ray_parameters = p_parameters;
+	int hit_count = 0;
+
+	for (int i = 0; i < p_command_count; i++) {
+		ray_parameters.from = p_commands[i].from;
+		ray_parameters.to = p_commands[i].to;
+		physics_direct_space_state_clear_ray_result(r_results[i]);
+
+		RayResult result;
+		if (!intersect_ray(ray_parameters, result)) {
+			continue;
+		}
+
+		physics_direct_space_state_assign_ray_result(result, r_results[i]);
+		hit_count++;
+	}
+
+	return hit_count;
+}
+
+int PhysicsDirectSpaceState3D::intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts) {
+	ERR_FAIL_COND_V(p_command_count < 0, 0);
+	ERR_FAIL_COND_V(p_max_results_per_command < 0, 0);
+
+	if (p_command_count == 0) {
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(p_commands, 0);
+	ERR_FAIL_NULL_V(r_result_counts, 0);
+
+	if (p_max_results_per_command == 0) {
+		for (int i = 0; i < p_command_count; i++) {
+			r_result_counts[i] = 0;
+		}
+		return 0;
+	}
+
+	ERR_FAIL_NULL_V(r_results, 0);
+
+	RayParameters ray_parameters = p_parameters;
+	int hit_count = 0;
+
+	for (int i = 0; i < p_command_count; i++) {
+		ray_parameters.from = p_commands[i].from;
+		ray_parameters.to = p_commands[i].to;
+
+		const int ray_hit_count = intersect_ray_all(ray_parameters, r_results + (i * p_max_results_per_command), p_max_results_per_command);
+		r_result_counts[i] = ray_hit_count;
+		hit_count += ray_hit_count;
+	}
+
+	return hit_count;
 }
 
 TypedArray<Dictionary> PhysicsDirectSpaceState3D::_intersect_point(RequiredParam<PhysicsPointQueryParameters3D> rp_point_query, int p_max_results) {
