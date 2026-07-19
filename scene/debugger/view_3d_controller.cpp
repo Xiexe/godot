@@ -518,7 +518,9 @@ void View3DController::update_camera(const real_t p_delta) {
 		const real_t tolerance = 0.001;
 		if (!Math::is_equal_approx(old_camera_cursor.x_rot, cursor_interp.x_rot, tolerance) || !Math::is_equal_approx(old_camera_cursor.y_rot, cursor_interp.y_rot, tolerance)) {
 			equal = false;
-		} else if (!old_camera_cursor.pos.is_equal_approx(cursor_interp.pos)) {
+		} else if (!Math::is_equal_approx(old_camera_cursor.pos.x, cursor_interp.pos.x, tolerance) ||
+				!Math::is_equal_approx(old_camera_cursor.pos.y, cursor_interp.pos.y, tolerance) ||
+				!Math::is_equal_approx(old_camera_cursor.pos.z, cursor_interp.pos.z, tolerance)) {
 			equal = false;
 		} else if (!Math::is_equal_approx(old_camera_cursor.distance, cursor_interp.distance, tolerance)) {
 			equal = false;

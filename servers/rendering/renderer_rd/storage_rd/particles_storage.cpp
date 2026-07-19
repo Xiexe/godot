@@ -254,6 +254,7 @@ void ParticlesStorage::particles_set_mode(RID p_particles, RSE::ParticlesMode p_
 	_particles_free_data(particles);
 
 	particles->mode = p_mode;
+	particles->simulation_origin_valid = false;
 }
 
 void ParticlesStorage::particles_set_emitting(RID p_particles, bool p_emitting) {
@@ -328,6 +329,76 @@ void ParticlesStorage::_particles_free_data(Particles *particles) {
 		RD::get_singleton()->free_rid(particles->particles_material_uniform_set);
 	}
 	particles->particles_material_uniform_set = RID();
+}
+
+bool ParticlesStorage::_particles_uses_world_space_simulation_origin(const Particles *p_particles) const {
+	return p_particles->mode == RSE::PARTICLES_MODE_3D && !p_particles->use_local_coords;
+}
+
+void ParticlesStorage::_particles_initialize_simulation_origin(Particles *p_particles, const Vector3 &p_origin) {
+	p_particles->simulation_origin = p_origin;
+	p_particles->previous_simulation_origin = p_origin;
+	p_particles->simulation_origin_valid = true;
+}
+
+Vector3 ParticlesStorage::_particles_update_simulation_origin(Particles *p_particles) {
+	if (!_particles_uses_world_space_simulation_origin(p_particles)) {
+		p_particles->simulation_origin = Vector3();
+		p_particles->previous_simulation_origin = Vector3();
+		p_particles->simulation_origin_valid = false;
+		return Vector3();
+	}
+
+	if (!p_particles->simulation_origin_valid || p_particles->clear) {
+		_particles_initialize_simulation_origin(p_particles, p_particles->emission_transform.origin);
+		return Vector3();
+	}
+
+	const Vector3 new_origin = p_particles->emission_transform.origin;
+	const double max_distance = Particles::SIMULATION_ORIGIN_REBASE_DISTANCE;
+	if (p_particles->simulation_origin.distance_squared_to(new_origin) > max_distance * max_distance) {
+		const Vector3 old_origin = p_particles->simulation_origin;
+		p_particles->simulation_origin = new_origin;
+		return old_origin - new_origin;
+	}
+
+	return Vector3();
+}
+
+void ParticlesStorage::_particles_rebase_frame_history(Particles *p_particles, const Vector3 &p_rebase_offset) {
+	if (p_rebase_offset.is_zero_approx()) {
+		return;
+	}
+
+	const float offset_x = p_rebase_offset.x;
+	const float offset_y = p_rebase_offset.y;
+	const float offset_z = p_rebase_offset.z;
+
+	for (uint32_t i = 1; i < p_particles->frame_history.size(); i++) {
+		ParticlesFrameParams &frame_params = p_particles->frame_history[i];
+		if (frame_params.frame == UINT32_MAX) {
+			continue;
+		}
+
+		frame_params.emission_transform[12] += offset_x;
+		frame_params.emission_transform[13] += offset_y;
+		frame_params.emission_transform[14] += offset_z;
+
+		for (uint32_t j = 0; j < frame_params.attractor_count; j++) {
+			frame_params.attractors[j].transform[12] += offset_x;
+			frame_params.attractors[j].transform[13] += offset_y;
+			frame_params.attractors[j].transform[14] += offset_z;
+		}
+
+		for (uint32_t j = 0; j < frame_params.collider_count; j++) {
+			if (frame_params.colliders[j].type == ParticlesFrameParams::COLLISION_TYPE_2D_SDF) {
+				continue;
+			}
+			frame_params.colliders[j].transform[12] += offset_x;
+			frame_params.colliders[j].transform[13] += offset_y;
+			frame_params.colliders[j].transform[14] += offset_z;
+		}
+	}
 }
 
 void ParticlesStorage::particles_set_amount(RID p_particles, int p_amount) {
@@ -411,6 +482,7 @@ void ParticlesStorage::particles_set_use_local_coordinates(RID p_particles, bool
 	ERR_FAIL_NULL(particles);
 
 	particles->use_local_coords = p_enable;
+	particles->simulation_origin_valid = false;
 	particles->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_PARTICLES);
 }
 
@@ -620,7 +692,14 @@ void ParticlesStorage::particles_emit(RID p_particles, const Transform3D &p_tran
 
 	int32_t idx = particles->emission_buffer->particle_count;
 	if (idx < particles->emission_buffer->particle_max) {
-		RendererRD::MaterialStorage::store_transform(p_transform, particles->emission_buffer->data[idx].xform);
+		Transform3D emission_xform = p_transform;
+		if (_particles_uses_world_space_simulation_origin(particles)) {
+			if (!particles->simulation_origin_valid) {
+				_particles_initialize_simulation_origin(particles, p_transform.origin);
+			}
+			emission_xform.origin -= particles->simulation_origin;
+		}
+		RendererRD::MaterialStorage::store_transform(emission_xform, particles->emission_buffer->data[idx].xform);
 
 		particles->emission_buffer->data[idx].velocity[0] = p_velocity.x;
 		particles->emission_buffer->data[idx].velocity[1] = p_velocity.y;
@@ -680,6 +759,9 @@ AABB ParticlesStorage::particles_get_current_aabb(RID p_particles) {
 			if (particle_data.active) {
 				Vector3 pos = Vector3(particle_data.xform[12], particle_data.xform[13], particle_data.xform[14]);
 				if (!particles->use_local_coords) {
+					if (_particles_uses_world_space_simulation_origin(particles)) {
+						pos += particles->simulation_origin;
+					}
 					pos = inv.xform(pos);
 				}
 				if (first) {
@@ -761,6 +843,19 @@ void ParticlesStorage::particles_get_instance_buffer_motion_vectors_offsets(RID 
 	r_prev_offset = particles->instance_motion_vectors_previous_offset;
 }
 
+void ParticlesStorage::particles_get_render_transforms(RID p_particles, Transform3D &r_transform, Transform3D &r_prev_transform) const {
+	const Particles *particles = particles_owner.get_or_null(p_particles);
+	ERR_FAIL_NULL(particles);
+
+	r_transform = Transform3D();
+	r_prev_transform = Transform3D();
+
+	if (_particles_uses_world_space_simulation_origin(particles) && particles->simulation_origin_valid) {
+		r_transform.origin = particles->simulation_origin;
+		r_prev_transform.origin = particles->previous_simulation_origin;
+	}
+}
+
 void ParticlesStorage::particles_add_collision(RID p_particles, RID p_particles_collision_instance) {
 	Particles *particles = particles_owner.get_or_null(p_particles);
 	ERR_FAIL_NULL(particles);
@@ -837,6 +932,8 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 		p_particles->particles_material_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, particles_shader.default_shader_rd, 1);
 	}
 
+	const Vector3 rebase_offset = _particles_update_simulation_origin(p_particles);
+
 	double new_phase = Math::fmod((double)(p_particles->phase + (p_delta / p_particles->lifetime)), 1.0);
 
 	//move back history (if there is any)
@@ -869,6 +966,10 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 
 	if (p_particles->use_local_coords) {
 		RendererRD::MaterialStorage::store_transform(Transform3D(), frame_params.emission_transform);
+	} else if (_particles_uses_world_space_simulation_origin(p_particles)) {
+		Transform3D relative_emission_transform = p_particles->emission_transform;
+		relative_emission_transform.origin -= p_particles->simulation_origin;
+		RendererRD::MaterialStorage::store_transform(relative_emission_transform, frame_params.emission_transform);
 	} else {
 		RendererRD::MaterialStorage::store_transform(p_particles->emission_transform, frame_params.emission_transform);
 	}
@@ -961,6 +1062,8 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 			Transform3D to_collider = pci->transform;
 			if (p_particles->use_local_coords) {
 				to_collider = to_particles * to_collider;
+			} else if (_particles_uses_world_space_simulation_origin(p_particles)) {
+				to_collider.origin -= p_particles->simulation_origin;
 			}
 			Vector3 scale = to_collider.basis.get_scale();
 			to_collider.basis.orthonormalize();
@@ -1132,6 +1235,8 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 		}
 	}
 
+	_particles_rebase_frame_history(p_particles, rebase_offset);
+
 	ParticlesShader::PushConstant push_constant;
 
 	int process_amount = p_particles->amount;
@@ -1146,10 +1251,28 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 	push_constant.use_fractional_delta = p_particles->fractional_delta;
 	push_constant.sub_emitter_mode = !p_particles->emitting && p_particles->emission_buffer && (p_particles->emission_buffer->particle_count > 0 || p_particles->force_sub_emit);
 	push_constant.trail_pass = false;
+	push_constant.rebase_offset[0] = rebase_offset.x;
+	push_constant.rebase_offset[1] = rebase_offset.y;
+	push_constant.rebase_offset[2] = rebase_offset.z;
+	push_constant.pad0 = 0;
+	push_constant.sub_emitter_position_offset[0] = 0.0;
+	push_constant.sub_emitter_position_offset[1] = 0.0;
+	push_constant.sub_emitter_position_offset[2] = 0.0;
+	push_constant.pad1 = 0;
 
 	p_particles->force_sub_emit = false; //reset
 
 	Particles *sub_emitter = particles_owner.get_or_null(p_particles->sub_emitter);
+
+	if (sub_emitter && _particles_uses_world_space_simulation_origin(p_particles) && _particles_uses_world_space_simulation_origin(sub_emitter)) {
+		if (!sub_emitter->simulation_origin_valid) {
+			_particles_initialize_simulation_origin(sub_emitter, sub_emitter->emission_transform.origin);
+		}
+		const Vector3 sub_emitter_offset = p_particles->simulation_origin - sub_emitter->simulation_origin;
+		push_constant.sub_emitter_position_offset[0] = sub_emitter_offset.x;
+		push_constant.sub_emitter_position_offset[1] = sub_emitter_offset.y;
+		push_constant.sub_emitter_position_offset[2] = sub_emitter_offset.z;
+	}
 
 	if (sub_emitter && sub_emitter->emission_storage_buffer.is_valid()) {
 		//	print_line("updating subemitter buffer");
@@ -1455,6 +1578,17 @@ void ParticlesStorage::update_particles() {
 		particles->dirty = false;
 
 		_particles_update_buffers(particles);
+
+		if (_particles_uses_world_space_simulation_origin(particles)) {
+			if (!particles->simulation_origin_valid) {
+				_particles_initialize_simulation_origin(particles, particles->emission_transform.origin);
+			}
+			particles->previous_simulation_origin = particles->simulation_origin;
+		} else {
+			particles->simulation_origin = Vector3();
+			particles->previous_simulation_origin = Vector3();
+			particles->simulation_origin_valid = false;
+		}
 
 		if (particles->restart_request) {
 			particles->prev_ticks = 0;

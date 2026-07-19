@@ -137,7 +137,7 @@ constexpr real_t ZOOM_FREELOOK_INDICATOR_DELAY_S = 1.5;
 constexpr real_t MIN_Z = 0.01;
 
 #ifdef REAL_T_IS_DOUBLE
-constexpr real_t MAX_Z = 100'000'000.0;
+constexpr real_t MAX_Z = 100'000'000'000.0;
 #else
 constexpr real_t MAX_Z = 1'000'000.0;
 #endif
@@ -8288,13 +8288,11 @@ shader_type spatial;
 render_mode blend_mix, cull_disabled, unshaded, fog_disabled;
 
 void vertex() {
-	vec3 point_a = MODEL_MATRIX[3].xyz;
-	// Encoded in scale.
-	vec3 point_b = vec3(MODEL_MATRIX[0].x, MODEL_MATRIX[1].y, MODEL_MATRIX[2].z);
+	vec4 point_a = MODELVIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
+	vec4 point_b = MODELVIEW_MATRIX * vec4(0.0, 0.0, 1.0, 1.0);
 
-	// Points are already in world space, so no need for MODEL_MATRIX anymore.
-	vec4 clip_a = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(point_a, 1.0));
-	vec4 clip_b = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(point_b, 1.0));
+	vec4 clip_a = PROJECTION_MATRIX * point_a;
+	vec4 clip_b = PROJECTION_MATRIX * point_b;
 
 	vec2 screen_a = VIEWPORT_SIZE * (0.5 * clip_a.xy / clip_a.w + 0.5);
 	vec2 screen_b = VIEWPORT_SIZE * (0.5 * clip_b.xy / clip_b.w + 0.5);
@@ -8385,14 +8383,11 @@ void fragment() {
 			axis[i] = 1;
 
 			for (int j = 0; j < 4; j++) {
-				Transform3D t = Transform3D();
-				if (distances[j] > 0.0) {
-					t = t.scaled(axis * distances[j + 1]);
-					t = t.translated(axis * distances[j]);
-				} else {
-					t = t.scaled(axis * distances[j]);
-					t = t.translated(axis * distances[j + 1]);
-				}
+				const Vector3 point_a = axis * (distances[j] > 0.0 ? distances[j] : distances[j + 1]);
+				const Vector3 point_b = axis * (distances[j] > 0.0 ? distances[j + 1] : distances[j]);
+				Transform3D t;
+				t.origin = point_a;
+				t.basis.set_column(2, point_b - point_a);
 				RenderingServer::get_singleton()->multimesh_instance_set_transform(origin_multimesh, i * 4 + j, t);
 				RenderingServer::get_singleton()->multimesh_instance_set_color(origin_multimesh, i * 4 + j, origin_color);
 			}
@@ -8429,11 +8424,9 @@ void fragment() {
 	float angle_fade = abs(dot(dir, NORMAL));
 	angle_fade = smoothstep(0.05, 0.2, angle_fade);
 
-	vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	vec3 world_normal = (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz;
-	vec3 camera_world_pos = INV_VIEW_MATRIX[3].xyz;
-	vec3 camera_world_pos_on_plane = camera_world_pos * (1.0 - world_normal);
-	float dist_fade = 1.0 - (distance(world_pos, camera_world_pos_on_plane) / grid_size);
+	vec3 view_normal = normalize(NORMAL);
+	vec3 camera_view_pos_on_plane = view_normal * dot(VERTEX, view_normal);
+	float dist_fade = 1.0 - (distance(VERTEX, camera_view_pos_on_plane) / grid_size);
 	dist_fade = smoothstep(0.02, 0.3, dist_fade);
 
 	ALPHA = COLOR.a * dist_fade * angle_fade;
@@ -9038,13 +9031,17 @@ void Node3DEditor::_init_grid() {
 
 		real_t small_step_size = Math::pow(primary_grid_steps, division_level_floored);
 		real_t large_step_size = small_step_size * primary_grid_steps;
-		real_t center_a = large_step_size * (int)(camera_position[a] / large_step_size);
-		real_t center_b = large_step_size * (int)(camera_position[b] / large_step_size);
+		real_t center_a = large_step_size * Math::floor(camera_position[a] / large_step_size);
+		real_t center_b = large_step_size * Math::floor(camera_position[b] / large_step_size);
 
-		real_t bgn_a = center_a - grid_size * small_step_size;
-		real_t end_a = center_a + grid_size * small_step_size;
-		real_t bgn_b = center_b - grid_size * small_step_size;
-		real_t end_b = center_b + grid_size * small_step_size;
+		Vector3 grid_anchor;
+		grid_anchor[a] = center_a;
+		grid_anchor[b] = center_b;
+
+		real_t bgn_a = -grid_size * small_step_size;
+		real_t end_a = grid_size * small_step_size;
+		real_t bgn_b = -grid_size * small_step_size;
+		real_t end_b = grid_size * small_step_size;
 
 		real_t fade_size = Math::pow(primary_grid_steps, division_level - 1.0);
 		real_t min_fade_size = Math::pow(primary_grid_steps, float(division_level_min));
@@ -9093,13 +9090,15 @@ void Node3DEditor::_init_grid() {
 
 			real_t position_a = center_a + i * small_step_size;
 			real_t position_b = center_b + i * small_step_size;
+			real_t local_position_a = i * small_step_size;
+			real_t local_position_b = i * small_step_size;
 
 			// Don't draw lines over the origin if it's enabled.
 			if (!(origin_enabled && Math::is_zero_approx(position_a))) {
 				Vector3 line_bgn;
 				Vector3 line_end;
-				line_bgn[a] = position_a;
-				line_end[a] = position_a;
+				line_bgn[a] = local_position_a;
+				line_end[a] = local_position_a;
 				line_bgn[b] = bgn_b;
 				line_end[b] = end_b;
 				ref_grid[idx] = line_bgn;
@@ -9114,8 +9113,8 @@ void Node3DEditor::_init_grid() {
 			if (!(origin_enabled && Math::is_zero_approx(position_b))) {
 				Vector3 line_bgn;
 				Vector3 line_end;
-				line_bgn[b] = position_b;
-				line_end[b] = position_b;
+				line_bgn[b] = local_position_b;
+				line_end[b] = local_position_b;
 				line_bgn[a] = bgn_a;
 				line_end[a] = end_a;
 				ref_grid[idx] = line_bgn;
@@ -9138,6 +9137,7 @@ void Node3DEditor::_init_grid() {
 		RenderingServer::get_singleton()->mesh_add_surface_from_arrays(grid[c], RSE::PRIMITIVE_LINES, d);
 		RenderingServer::get_singleton()->mesh_surface_set_material(grid[c], 0, grid_mat[c]->get_rid());
 		grid_instance[c] = RenderingServer::get_singleton()->instance_create2(grid[c], get_tree()->get_root()->get_world_3d()->get_scenario());
+		RenderingServer::get_singleton()->instance_set_transform(grid_instance[c], Transform3D(Basis(), grid_anchor));
 
 		// Yes, the end of this line is supposed to be a.
 		RenderingServer::get_singleton()->instance_set_visible(grid_instance[c], grid_visible[a]);

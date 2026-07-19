@@ -2115,6 +2115,22 @@ void RenderForwardMobile::_fill_instance_data(RenderListType p_render_list, uint
 			RendererRD::MaterialStorage::split_double(inst->prev_transform.origin.y, &instance_data.prev_transform[7], &instance_data.prev_model_precision[1]);
 			RendererRD::MaterialStorage::split_double(inst->prev_transform.origin.z, &instance_data.prev_transform[11], &instance_data.prev_model_precision[2]);
 #endif
+		} else if (inst->base_flags & INSTANCE_DATA_FLAG_PARTICLES) {
+			Transform3D particles_transform;
+			Transform3D particles_prev_transform;
+			RendererRD::ParticlesStorage::get_singleton()->particles_get_render_transforms(inst->data->base, particles_transform, particles_prev_transform);
+
+			RendererRD::MaterialStorage::store_transform_transposed_3x4(particles_transform, instance_data.transform);
+			RendererRD::MaterialStorage::store_transform_transposed_3x4(particles_prev_transform, instance_data.prev_transform);
+
+#ifdef REAL_T_IS_DOUBLE
+			RendererRD::MaterialStorage::split_double(particles_transform.origin.x, &instance_data.transform[3], &instance_data.model_precision[0]);
+			RendererRD::MaterialStorage::split_double(particles_transform.origin.y, &instance_data.transform[7], &instance_data.model_precision[1]);
+			RendererRD::MaterialStorage::split_double(particles_transform.origin.z, &instance_data.transform[11], &instance_data.model_precision[2]);
+			RendererRD::MaterialStorage::split_double(particles_prev_transform.origin.x, &instance_data.prev_transform[3], &instance_data.prev_model_precision[0]);
+			RendererRD::MaterialStorage::split_double(particles_prev_transform.origin.y, &instance_data.prev_transform[7], &instance_data.prev_model_precision[1]);
+			RendererRD::MaterialStorage::split_double(particles_prev_transform.origin.z, &instance_data.prev_transform[11], &instance_data.prev_model_precision[2]);
+#endif
 		} else {
 			RendererRD::MaterialStorage::store_transform_transposed_3x4(Transform3D(), instance_data.transform);
 			RendererRD::MaterialStorage::store_transform_transposed_3x4(Transform3D(), instance_data.prev_transform);

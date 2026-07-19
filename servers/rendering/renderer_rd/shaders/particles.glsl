@@ -184,6 +184,10 @@ layout(push_constant, std430) uniform Params {
 	bool sub_emitter_mode;
 	bool can_emit;
 	bool trail_pass;
+	vec3 rebase_offset;
+	uint pad0;
+	vec3 sub_emitter_position_offset;
+	uint pad1;
 }
 params;
 
@@ -208,7 +212,10 @@ bool emit_subparticle(mat4 p_xform, vec3 p_velocity, vec4 p_color, vec4 p_custom
 		return false;
 	}
 
-	dst_particles.data[dst_index].xform = p_xform;
+	mat4 dst_xform = p_xform;
+	dst_xform[3].xyz += params.sub_emitter_position_offset;
+
+	dst_particles.data[dst_index].xform = dst_xform;
 	dst_particles.data[dst_index].velocity = p_velocity;
 	dst_particles.data[dst_index].color = p_color;
 	dst_particles.data[dst_index].custom = p_custom;
@@ -280,6 +287,10 @@ void main() {
 				vec4(0.0, 0.0, 0.0, 1.0));
 	}
 
+	if (any(notEqual(params.rebase_offset, vec3(0.0))) && bool(PARTICLE.flags & (PARTICLE_FLAG_ACTIVE | PARTICLE_FLAG_TRAILED))) {
+		PARTICLE.xform[3].xyz += params.rebase_offset;
+	}
+
 	//clear started flag if set
 
 	if (params.trail_pass) {
@@ -349,6 +360,7 @@ void main() {
 
 				if (bool(src_particles.data[src_index].flags & EMISSION_FLAG_HAS_POSITION)) {
 					PARTICLE.xform[3] = src_particles.data[src_index].xform[3];
+					PARTICLE.xform[3].xyz += params.rebase_offset;
 				} else {
 					PARTICLE.xform[3] = vec4(0, 0, 0, 1);
 					restart_position = true;
