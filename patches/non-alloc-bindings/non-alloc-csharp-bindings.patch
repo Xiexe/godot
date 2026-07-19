@@ -1,0 +1,1961 @@
+diff --git forkSrcPrefix/servers/physics_3d/physics_server_3d.h forkDstPrefix/servers/physics_3d/physics_server_3d.h
+index 3738c1ee7061f67ae815cf79d9d0af3d815722ea..e16702d76d4158b5b8ef6c16a9e2dcc5ca7eee8a 100644
+--- forkSrcPrefix/servers/physics_3d/physics_server_3d.h
++++ forkDstPrefix/servers/physics_3d/physics_server_3d.h
+@@ -162,7 +162,24 @@ public:
+ 		int face_index = -1;
+ 	};
+ 
++	struct RayCommand {
++		Vector3 from;
++		Vector3 to;
++	};
++
++	struct RayBatchResult {
++		Vector3 position;
++		Vector3 normal;
++		RID rid;
++		uint64_t collider_id = 0;
++		int32_t shape = 0;
++		int32_t face_index = -1;
++	};
++
+ 	virtual bool intersect_ray(const RayParameters &p_parameters, RayResult &r_result) = 0;
++	virtual int intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max);
++	virtual int intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count);
++	virtual int intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts);
+ 
+ 	struct ShapeResult {
+ 		RID rid;
+diff --git forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
+index d117a7eb862d5966f744d2c1a91b47b8f57cc061..5d5a1312da000db1163b0e41dc22806362937203 100644
+--- forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
++++ forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.cpp
+@@ -392,7 +392,7 @@ bool JoltPhysicsDirectSpaceState3D::_body_motion_collide(const JoltBody3D &p_bod
+ 	return count > 0;
+ }
+ 
+-int JoltPhysicsDirectSpaceState3D::_try_get_face_index(const JPH::Body &p_body, const JPH::SubShapeID &p_sub_shape_id) {
++int JoltPhysicsDirectSpaceState3D::_try_get_face_index(const JPH::Body &p_body, const JPH::SubShapeID &p_sub_shape_id) const {
+ 	if (!JoltProjectSettings::enable_ray_cast_face_index) {
+ 		return -1;
+ 	}
+@@ -409,6 +409,47 @@ int JoltPhysicsDirectSpaceState3D::_try_get_face_index(const JPH::Body &p_body,
+ 	return (int)mesh_shape->GetTriangleUserData(sub_shape_id_remainder);
+ }
+ 
++bool JoltPhysicsDirectSpaceState3D::_try_assign_ray_batch_result(const RayParameters &p_parameters, const JPH::RRayCast &p_ray, const JPH::Vec3 &p_vector, const JPH::RayCastResult &p_hit, RayBatchResult &r_result) const {
++	const JPH::SubShapeID &sub_shape_id = p_hit.mSubShapeID2;
++
++	const JoltObject3D *object = space->try_get_object(p_hit.mBodyID);
++	if (unlikely(object == nullptr)) {
++		return false;
++	}
++
++	const JPH::RVec3 position = p_ray.GetPointOnRay(p_hit.mFraction);
++
++	JPH::Vec3 normal = JPH::Vec3::sZero();
++
++	if (!p_parameters.hit_from_inside || p_hit.mFraction > 0.0f) {
++		normal = object->get_jolt_body()->GetWorldSpaceSurfaceNormal(sub_shape_id, position);
++
++		// If we got a back-face normal we need to flip it.
++		if (normal.Dot(p_vector) > 0) {
++			normal = -normal;
++		}
++	}
++
++	r_result.position = to_godot(position);
++	r_result.normal = to_godot(normal);
++	r_result.rid = object->get_rid();
++	r_result.collider_id = (uint64_t)object->get_instance_id();
++	r_result.shape = 0;
++	r_result.face_index = -1;
++
++	if (const JoltShapedObject3D *shaped_object = object->as_shaped()) {
++		const int shape_index = shaped_object->find_shape_index(sub_shape_id);
++		if (unlikely(shape_index == -1)) {
++			return false;
++		}
++
++		r_result.shape = shape_index;
++		r_result.face_index = _try_get_face_index(*object->get_jolt_body(), sub_shape_id);
++	}
++
++	return true;
++}
++
+ void JoltPhysicsDirectSpaceState3D::_generate_manifold(const JPH::CollideShapeResult &p_hit, JPH::ContactPoints &r_contact_points1, JPH::ContactPoints &r_contact_points2 JPH_IF_DEBUG_RENDERER(, JPH::RVec3Arg p_center_of_mass)) const {
+ 	const JPH::PhysicsSystem &physics_system = space->get_physics_system();
+ 	const JPH::PhysicsSettings &physics_settings = physics_system.GetPhysicsSettings();
+@@ -477,7 +518,7 @@ bool JoltPhysicsDirectSpaceState3D::intersect_ray(const RayParameters &p_paramet
+ 
+ 	JPH::RayCastSettings settings;
+ 	settings.mTreatConvexAsSolid = p_parameters.hit_from_inside;
+-	settings.mBackFaceModeTriangles = back_face_mode;
++	settings.SetBackFaceMode(back_face_mode);
+ 
+ 	JoltQueryCollectorClosest<JPH::CastRayCollector> collector;
+ 	space->get_narrow_phase_query().CastRay(ray, settings, collector, query_filter, query_filter, query_filter);
+@@ -524,6 +565,170 @@ bool JoltPhysicsDirectSpaceState3D::intersect_ray(const RayParameters &p_paramet
+ 	return true;
+ }
+ 
++int JoltPhysicsDirectSpaceState3D::intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max) {
++	ERR_FAIL_COND_V_MSG(space->is_stepping(), 0, "intersect_ray_all must not be called while the physics space is being stepped.");
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	space->flush_pending_objects();
++
++	const JoltQueryFilter3D query_filter(*this, p_parameters.collision_mask, p_parameters.collide_with_bodies, p_parameters.collide_with_areas, p_parameters.exclude, p_parameters.pick_ray);
++
++	const JPH::RVec3 from = to_jolt_r(p_parameters.from);
++	const JPH::RVec3 to = to_jolt_r(p_parameters.to);
++	const JPH::Vec3 vector = JPH::Vec3(to - from);
++	const JPH::RRayCast ray(from, vector);
++
++	const JPH::EBackFaceMode back_face_mode = p_parameters.hit_back_faces ? JPH::EBackFaceMode::CollideWithBackFaces : JPH::EBackFaceMode::IgnoreBackFaces;
++
++	JPH::RayCastSettings settings;
++	settings.mTreatConvexAsSolid = p_parameters.hit_from_inside;
++	settings.SetBackFaceMode(back_face_mode);
++
++	JoltQueryCollectorClosestMulti<JPH::CastRayCollector, 32> collector(p_result_max);
++	space->get_narrow_phase_query().CastRay(ray, settings, collector, query_filter, query_filter, query_filter);
++
++	int result_count = 0;
++
++	for (int i = 0; i < collector.get_hit_count(); ++i) {
++		RayBatchResult result;
++		if (!_try_assign_ray_batch_result(p_parameters, ray, vector, collector.get_hit(i), result)) {
++			continue;
++		}
++
++		r_results[result_count++] = result;
++	}
++
++	return result_count;
++}
++
++int JoltPhysicsDirectSpaceState3D::intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count) {
++	ERR_FAIL_COND_V_MSG(space->is_stepping(), 0, "intersect_ray_batch must not be called while the physics space is being stepped.");
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	space->flush_pending_objects();
++
++	const JoltQueryFilter3D query_filter(*this, p_parameters.collision_mask, p_parameters.collide_with_bodies, p_parameters.collide_with_areas, p_parameters.exclude, p_parameters.pick_ray);
++	const JPH::EBackFaceMode back_face_mode = p_parameters.hit_back_faces ? JPH::EBackFaceMode::CollideWithBackFaces : JPH::EBackFaceMode::IgnoreBackFaces;
++	const JPH::NarrowPhaseQuery &narrow_phase_query = space->get_narrow_phase_query();
++
++	JPH::RayCastSettings settings;
++	settings.mTreatConvexAsSolid = p_parameters.hit_from_inside;
++	settings.SetBackFaceMode(back_face_mode);
++
++	JoltQueryCollectorClosest<JPH::CastRayCollector> collector;
++
++	int hit_count = 0;
++
++	for (int i = 0; i < p_command_count; ++i) {
++		RayBatchResult result;
++		result.position = Vector3();
++		result.normal = Vector3();
++		result.rid = RID();
++		result.collider_id = 0;
++		result.shape = 0;
++		result.face_index = 0;
++
++		const JPH::RVec3 from = to_jolt_r(p_commands[i].from);
++		const JPH::RVec3 to = to_jolt_r(p_commands[i].to);
++		const JPH::Vec3 vector = JPH::Vec3(to - from);
++		const JPH::RRayCast ray(from, vector);
++
++		collector.reset();
++		narrow_phase_query.CastRay(ray, settings, collector, query_filter, query_filter, query_filter);
++
++		if (!collector.had_hit()) {
++			r_results[i] = result;
++			continue;
++		}
++
++		if (!_try_assign_ray_batch_result(p_parameters, ray, vector, collector.get_hit(), result)) {
++			r_results[i] = result;
++			continue;
++		}
++
++		r_results[i] = result;
++		hit_count++;
++	}
++
++	return hit_count;
++}
++
++int JoltPhysicsDirectSpaceState3D::intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts) {
++	ERR_FAIL_COND_V_MSG(space->is_stepping(), 0, "intersect_ray_batch_all must not be called while the physics space is being stepped.");
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++	ERR_FAIL_COND_V(p_max_results_per_command < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_result_counts, 0);
++
++	if (p_max_results_per_command == 0) {
++		for (int i = 0; i < p_command_count; ++i) {
++			r_result_counts[i] = 0;
++		}
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	space->flush_pending_objects();
++
++	const JoltQueryFilter3D query_filter(*this, p_parameters.collision_mask, p_parameters.collide_with_bodies, p_parameters.collide_with_areas, p_parameters.exclude, p_parameters.pick_ray);
++	const JPH::EBackFaceMode back_face_mode = p_parameters.hit_back_faces ? JPH::EBackFaceMode::CollideWithBackFaces : JPH::EBackFaceMode::IgnoreBackFaces;
++	const JPH::NarrowPhaseQuery &narrow_phase_query = space->get_narrow_phase_query();
++
++	JPH::RayCastSettings settings;
++	settings.mTreatConvexAsSolid = p_parameters.hit_from_inside;
++	settings.SetBackFaceMode(back_face_mode);
++
++	JoltQueryCollectorClosestMulti<JPH::CastRayCollector, 32> collector(p_max_results_per_command);
++
++	int hit_count = 0;
++
++	for (int i = 0; i < p_command_count; ++i) {
++		const JPH::RVec3 from = to_jolt_r(p_commands[i].from);
++		const JPH::RVec3 to = to_jolt_r(p_commands[i].to);
++		const JPH::Vec3 vector = JPH::Vec3(to - from);
++		const JPH::RRayCast ray(from, vector);
++
++		collector.reset();
++		narrow_phase_query.CastRay(ray, settings, collector, query_filter, query_filter, query_filter);
++
++		int ray_hit_count = 0;
++		RayBatchResult *ray_results = r_results + (i * p_max_results_per_command);
++
++		for (int j = 0; j < collector.get_hit_count(); ++j) {
++			RayBatchResult result;
++			if (!_try_assign_ray_batch_result(p_parameters, ray, vector, collector.get_hit(j), result)) {
++				continue;
++			}
++
++			ray_results[ray_hit_count++] = result;
++		}
++
++		r_result_counts[i] = ray_hit_count;
++		hit_count += ray_hit_count;
++	}
++
++	return hit_count;
++}
++
+ int JoltPhysicsDirectSpaceState3D::intersect_point(const PointParameters &p_parameters, ShapeResult *r_results, int p_result_max) {
+ 	ERR_FAIL_COND_V_MSG(space->is_stepping(), false, "intersect_point must not be called while the physics space is being stepped.");
+ 
+diff --git forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
+index d28af77b047e5af60666a690978e39ef27cac1d4..925ad468671579fd207fc91ae39d53d161b1535b 100644
+--- forkSrcPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
++++ forkDstPrefix/modules/jolt_physics/spaces/jolt_physics_direct_space_state_3d.h
+@@ -59,7 +59,8 @@ class JoltPhysicsDirectSpaceState3D final : public PhysicsDirectSpaceState3D {
+ 	bool _body_motion_cast(const JoltBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_scale, const Vector3 &p_motion, bool p_collide_separation_ray, const HashSet<RID> &p_excluded_bodies, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction) const;
+ 	bool _body_motion_collide(const JoltBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, float p_margin, int p_max_collisions, const HashSet<RID> &p_excluded_bodies, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
+ 
+-	int _try_get_face_index(const JPH::Body &p_body, const JPH::SubShapeID &p_sub_shape_id);
++	int _try_get_face_index(const JPH::Body &p_body, const JPH::SubShapeID &p_sub_shape_id) const;
++	bool _try_assign_ray_batch_result(const RayParameters &p_parameters, const JPH::RRayCast &p_ray, const JPH::Vec3 &p_vector, const JPH::RayCastResult &p_hit, RayBatchResult &r_result) const;
+ 
+ 	void _generate_manifold(const JPH::CollideShapeResult &p_hit, JPH::ContactPoints &r_contact_points1, JPH::ContactPoints &r_contact_points2 JPH_IF_DEBUG_RENDERER(, JPH::RVec3Arg p_center_of_mass)) const;
+ 
+@@ -71,6 +72,9 @@ public:
+ 	explicit JoltPhysicsDirectSpaceState3D(JoltSpace3D *p_space);
+ 
+ 	virtual bool intersect_ray(const RayParameters &p_parameters, RayResult &r_result) override;
++	virtual int intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max) override;
++	virtual int intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count) override;
++	virtual int intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts) override;
+ 	virtual int intersect_point(const PointParameters &p_parameters, ShapeResult *r_results, int p_result_max) override;
+ 	virtual int intersect_shape(const ShapeParameters &p_parameters, ShapeResult *r_results, int p_result_max) override;
+ 	virtual bool cast_motion(const ShapeParameters &p_parameters, real_t &r_closest_safe, real_t &r_closest_unsafe, ShapeRestInfo *r_info = nullptr) override;
+diff --git forkSrcPrefix/modules/mono/editor/bindings_generator.cpp forkDstPrefix/modules/mono/editor/bindings_generator.cpp
+index 666ee8b22a7007d265f52fbb378307abcb12510e..26cd9c08a495dc372bf8097e542f2024c19246a1 100644
+--- forkSrcPrefix/modules/mono/editor/bindings_generator.cpp
++++ forkDstPrefix/modules/mono/editor/bindings_generator.cpp
+@@ -2144,6 +2144,7 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+ 	CRASH_COND(!itype.is_object_type);
+ 
+ 	bool is_derived_type = itype.base_name != StringName();
++	bool is_node_type = itype.cname == StringName("Node");
+ 
+ 	if (!is_derived_type) {
+ 		// Some GodotObject assertions
+@@ -2164,6 +2165,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+ 	output.append("using System.ComponentModel;\n"); // EditorBrowsable
+ 	output.append("using System.Diagnostics;\n"); // DebuggerBrowsable
+ 	output.append("using Godot.NativeInterop;\n");
++	if (is_node_type) {
++		output.append("using Godot.Bridge;\n");
++	}
+ 
+ 	output.append("\n#nullable disable\n");
+ 
+@@ -2498,6 +2502,13 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+ 				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name << ".NativeValue))\n"
+ 				   << INDENT2 "{\n";
+ 
++			if (is_node_type && imethod.name == "_input") {
++				output << INDENT3 "if (FastInputDispatch.TryInvokeInput(this, args, out ret))\n"
++					   << INDENT3 "{\n"
++					   << INDENT4 "return true;\n"
++					   << INDENT3 "}\n";
++			}
++
+ 			if (imethod.return_type.cname != name_cache.type_void) {
+ 				output << INDENT3 "var callRet = ";
+ 			} else {
+@@ -2580,6 +2591,9 @@ Error BindingsGenerator::_generate_cs_type(const TypeInterface &itype, const Str
+ 			// generators take care of generating those override methods.
+ 			output << INDENT2 "if (method == MethodName." << imethod.proxy_name
+ 				   << ")\n" INDENT2 "{\n"
++				   << (is_node_type && imethod.name == "_input" ?
++									 String(INDENT3 "if (FastInputDispatch.HasInputHandler(this))\n" INDENT3 "{\n" INDENT4 "return true;\n" INDENT3 "}\n") :
++									 String())
+ 				   << INDENT3 "if (" CS_METHOD_HAS_GODOT_CLASS_METHOD "("
+ 				   << CS_STATIC_FIELD_METHOD_PROXY_NAME_PREFIX << imethod.name
+ 				   << ".NativeValue.DangerousSelfRef))\n" INDENT3 "{\n"
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
+index 48150535486654e9782d82b657d68cb04d1e9e10..ae4eb7214663631749da592c8fb80b99cc4b637f 100644
+--- forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/NativeFuncs.cs
+@@ -173,6 +173,64 @@ namespace Godot.NativeInterop
+ 
+         internal static partial float godotsharp_color_get_ok_hsl_l(in Color p_self);
+ 
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_intersect_ray(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult2D r_result);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_point(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_intersect_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult2D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_cast_motion(
++            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
++
++        internal static partial int godotsharp_physics_direct_space_state_2d_collide_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision2D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_2d_rest_info(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo2D r_result);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_intersect_ray(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsRayQueryResult3D r_result);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_all(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
++            PhysicsRayQueryResult3D* r_results);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsRayCommand3D* p_commands, int p_commandCount,
++            PhysicsRayQueryResult3D* r_results, int p_maxResultsPerCommand, int* r_resultCounts);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_point(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_intersect_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeQueryResult3D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_cast_motion(
++            IntPtr p_spaceState, IntPtr p_parameters, out real_t r_closestSafe, out real_t r_closestUnsafe);
++
++        internal static partial int godotsharp_physics_direct_space_state_3d_collide_shape(
++            IntPtr p_spaceState, IntPtr p_parameters, PhysicsShapeCollision3D* r_results, int p_resultMax);
++
++        internal static partial godot_bool godotsharp_physics_direct_space_state_3d_rest_info(
++            IntPtr p_spaceState, IntPtr p_parameters, out PhysicsShapeRestInfo3D r_result);
++
++        internal static partial int godotsharp_input_event_get_fast_type(IntPtr p_event);
++
++        internal static partial void godotsharp_input_event_as_mouse_motion(
++            IntPtr p_event, out InputEventMouseMotionData r_event);
++
++        internal static partial void godotsharp_input_event_as_mouse_button(
++            IntPtr p_event, out InputEventMouseButtonData r_event);
++
++        internal static partial void godotsharp_input_event_as_key(
++            IntPtr p_event, out InputEventKeyData r_event);
++
+         // GDNative functions
+ 
+         // gdnative.h
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..18f2915457a2266a6fe771101b0bdb5e5c60b33c
+--- /dev/null
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/InputEventFastPath.cs
+@@ -0,0 +1,309 @@
++namespace Godot
++{
++
++using System;
++using System.Runtime.CompilerServices;
++using System.Runtime.InteropServices;
++using Godot.NativeInterop;
++
++public interface IInputEventMouseMotionHandler
++{
++    void OnInput(in InputEventMouseMotionData eventData);
++}
++
++public interface IInputEventMouseButtonHandler
++{
++    void OnInput(in InputEventMouseButtonData eventData);
++}
++
++public interface IInputEventKeyHandler
++{
++    void OnInput(in InputEventKeyData eventData);
++}
++
++[StructLayout(LayoutKind.Sequential)]
++public readonly struct InputEventMouseMotionData
++{
++    public readonly int Device;
++    public readonly long WindowId;
++    public readonly MouseButtonMask ButtonMask;
++    public readonly Vector2 Position;
++    public readonly Vector2 GlobalPosition;
++    public readonly Vector2 Relative;
++    public readonly Vector2 ScreenRelative;
++    public readonly Vector2 Velocity;
++    public readonly Vector2 ScreenVelocity;
++    public readonly Vector2 Tilt;
++    public readonly float Pressure;
++    private readonly godot_bool _canceled;
++    private readonly godot_bool _shiftPressed;
++    private readonly godot_bool _altPressed;
++    private readonly godot_bool _ctrlPressed;
++    private readonly godot_bool _metaPressed;
++    private readonly godot_bool _commandOrControlAutoremap;
++    private readonly godot_bool _penInverted;
++
++    public bool Canceled
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _canceled.ToBool();
++    }
++
++    public bool ShiftPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _shiftPressed.ToBool();
++    }
++
++    public bool AltPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _altPressed.ToBool();
++    }
++
++    public bool CtrlPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _ctrlPressed.ToBool();
++    }
++
++    public bool MetaPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _metaPressed.ToBool();
++    }
++
++    public bool CommandOrControlAutoremap
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _commandOrControlAutoremap.ToBool();
++    }
++
++    public bool PenInverted
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _penInverted.ToBool();
++    }
++}
++
++[StructLayout(LayoutKind.Sequential)]
++public readonly struct InputEventMouseButtonData
++{
++    public readonly int Device;
++    public readonly long WindowId;
++    public readonly MouseButtonMask ButtonMask;
++    public readonly Vector2 Position;
++    public readonly Vector2 GlobalPosition;
++    public readonly float Factor;
++    public readonly MouseButton ButtonIndex;
++    private readonly godot_bool _canceled;
++    private readonly godot_bool _pressed;
++    private readonly godot_bool _doubleClick;
++    private readonly godot_bool _shiftPressed;
++    private readonly godot_bool _altPressed;
++    private readonly godot_bool _ctrlPressed;
++    private readonly godot_bool _metaPressed;
++    private readonly godot_bool _commandOrControlAutoremap;
++
++    public bool Canceled
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _canceled.ToBool();
++    }
++
++    public bool Pressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _pressed.ToBool();
++    }
++
++    public bool DoubleClick
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _doubleClick.ToBool();
++    }
++
++    public bool ShiftPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _shiftPressed.ToBool();
++    }
++
++    public bool AltPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _altPressed.ToBool();
++    }
++
++    public bool CtrlPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _ctrlPressed.ToBool();
++    }
++
++    public bool MetaPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _metaPressed.ToBool();
++    }
++
++    public bool CommandOrControlAutoremap
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _commandOrControlAutoremap.ToBool();
++    }
++}
++
++[StructLayout(LayoutKind.Sequential)]
++public readonly struct InputEventKeyData
++{
++    public readonly int Device;
++    public readonly long WindowId;
++    public readonly Key Keycode;
++    public readonly Key PhysicalKeycode;
++    public readonly Key KeyLabel;
++    private readonly uint _unicode;
++    public readonly KeyLocation Location;
++    private readonly godot_bool _canceled;
++    private readonly godot_bool _pressed;
++    private readonly godot_bool _echo;
++    private readonly godot_bool _shiftPressed;
++    private readonly godot_bool _altPressed;
++    private readonly godot_bool _ctrlPressed;
++    private readonly godot_bool _metaPressed;
++    private readonly godot_bool _commandOrControlAutoremap;
++
++    public long Unicode
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _unicode;
++    }
++
++    public bool Canceled
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _canceled.ToBool();
++    }
++
++    public bool Pressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _pressed.ToBool();
++    }
++
++    public bool Echo
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _echo.ToBool();
++    }
++
++    public bool ShiftPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _shiftPressed.ToBool();
++    }
++
++    public bool AltPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _altPressed.ToBool();
++    }
++
++    public bool CtrlPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _ctrlPressed.ToBool();
++    }
++
++    public bool MetaPressed
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _metaPressed.ToBool();
++    }
++
++    public bool CommandOrControlAutoremap
++    {
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
++        get => _commandOrControlAutoremap.ToBool();
++    }
++}
++
++}
++
++namespace Godot.Bridge
++{
++
++using System;
++using Godot.NativeInterop;
++
++internal static class FastInputDispatch
++{
++    private enum InputEventFastType
++    {
++        None = 0,
++        MouseMotion = 1,
++        MouseButton = 2,
++        Key = 3,
++    }
++
++    internal static bool HasInputHandler(GodotObject godotObject)
++        => godotObject is IInputEventMouseMotionHandler ||
++           godotObject is IInputEventMouseButtonHandler ||
++           godotObject is IInputEventKeyHandler;
++
++    internal static bool TryInvokeInput(GodotObject godotObject, NativeVariantPtrArgs args, out godot_variant ret)
++    {
++        ret = default;
++
++        if (!HasInputHandler(godotObject) || args.Count != 1)
++        {
++            return false;
++        }
++
++        IntPtr inputEvent = VariantUtils.ConvertToGodotObjectPtr(args[0]);
++        if (inputEvent == IntPtr.Zero)
++        {
++            return false;
++        }
++
++        switch ((InputEventFastType)NativeFuncs.godotsharp_input_event_get_fast_type(inputEvent))
++        {
++            case InputEventFastType.MouseMotion:
++            {
++                if (godotObject is not IInputEventMouseMotionHandler handler)
++                {
++                    return false;
++                }
++
++                NativeFuncs.godotsharp_input_event_as_mouse_motion(inputEvent, out InputEventMouseMotionData eventData);
++                handler.OnInput(in eventData);
++                return true;
++            }
++            case InputEventFastType.MouseButton:
++            {
++                if (godotObject is not IInputEventMouseButtonHandler handler)
++                {
++                    return false;
++                }
++
++                NativeFuncs.godotsharp_input_event_as_mouse_button(inputEvent, out InputEventMouseButtonData eventData);
++                handler.OnInput(in eventData);
++                return true;
++            }
++            case InputEventFastType.Key:
++            {
++                if (godotObject is not IInputEventKeyHandler handler)
++                {
++                    return false;
++                }
++
++                NativeFuncs.godotsharp_input_event_as_key(inputEvent, out InputEventKeyData eventData);
++                handler.OnInput(in eventData);
++                return true;
++            }
++            default:
++                return false;
++        }
++    }
++}
++}
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7f1266a0a11f49ccc28f8ebc2d182c9b72e5f7f
+--- /dev/null
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState2D.cs
+@@ -0,0 +1,57 @@
++using System;
++using Godot.NativeInterop;
++
++#nullable enable
++
++namespace Godot
++{
++    public partial class PhysicsDirectSpaceState2D
++    {
++        public unsafe bool TryIntersectRay(PhysicsRayQueryParameters2D parameters, out PhysicsRayQueryResult2D result)
++        {
++            result = default;
++            return NativeFuncs.godotsharp_physics_direct_space_state_2d_intersect_ray(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out result).ToBool();
++        }
++
++        public unsafe int IntersectPoint(PhysicsPointQueryParameters2D parameters, Span<PhysicsShapeQueryResult2D> results)
++        {
++            fixed (PhysicsShapeQueryResult2D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_2d_intersect_point(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public unsafe int IntersectShape(PhysicsShapeQueryParameters2D parameters, Span<PhysicsShapeQueryResult2D> results)
++        {
++            fixed (PhysicsShapeQueryResult2D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_2d_intersect_shape(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public bool CastMotion(PhysicsShapeQueryParameters2D parameters, out real_t closestSafe, out real_t closestUnsafe)
++        {
++            return NativeFuncs.godotsharp_physics_direct_space_state_2d_cast_motion(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out closestSafe, out closestUnsafe).ToBool();
++        }
++
++        public unsafe int CollideShape(PhysicsShapeQueryParameters2D parameters, Span<PhysicsShapeCollision2D> results)
++        {
++            fixed (PhysicsShapeCollision2D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_2d_collide_shape(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public bool TryGetRestInfo(PhysicsShapeQueryParameters2D parameters, out PhysicsShapeRestInfo2D result)
++        {
++            result = default;
++            return NativeFuncs.godotsharp_physics_direct_space_state_2d_rest_info(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out result).ToBool();
++        }
++    }
++}
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c60c9163fe29659bd26fcbbca0f9287799f5a59e
+--- /dev/null
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsDirectSpaceState3D.cs
+@@ -0,0 +1,113 @@
++using System;
++using Godot.NativeInterop;
++
++#nullable enable
++
++namespace Godot
++{
++    public partial class PhysicsDirectSpaceState3D
++    {
++        public unsafe bool TryIntersectRay(PhysicsRayQueryParameters3D parameters, out PhysicsRayQueryResult3D result)
++        {
++            result = default;
++            return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_ray(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out result).ToBool();
++        }
++
++        public unsafe int IntersectRayAll(PhysicsRayQueryParameters3D parameters, Span<PhysicsRayQueryResult3D> results)
++        {
++            if (results.IsEmpty)
++                return 0;
++
++            fixed (PhysicsRayQueryResult3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_ray_all(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public unsafe int IntersectRays(PhysicsRayQueryParameters3D parameters, ReadOnlySpan<PhysicsRayCommand3D> commands, Span<PhysicsRayQueryResult3D> results)
++        {
++            if (results.Length < commands.Length)
++                throw new ArgumentException("Results span must be at least as long as commands span.", nameof(results));
++
++            if (commands.IsEmpty)
++                return 0;
++
++            fixed (PhysicsRayCommand3D* commandsPtr = commands)
++            fixed (PhysicsRayQueryResult3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_ray_batch(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), commandsPtr, commands.Length, resultsPtr);
++            }
++        }
++
++        public unsafe int IntersectRaysAll(PhysicsRayQueryParameters3D parameters, ReadOnlySpan<PhysicsRayCommand3D> commands, int maxHitsPerRay, Span<int> hitCounts, Span<PhysicsRayQueryResult3D> results)
++        {
++            ArgumentOutOfRangeException.ThrowIfNegative(maxHitsPerRay);
++
++            if (hitCounts.Length < commands.Length)
++                throw new ArgumentException("Hit counts span must be at least as long as commands span.", nameof(hitCounts));
++
++            if ((long)results.Length < (long)commands.Length * maxHitsPerRay)
++                throw new ArgumentException("Results span must be at least commands.Length * maxHitsPerRay.", nameof(results));
++
++            if (commands.IsEmpty)
++                return 0;
++
++            if (maxHitsPerRay == 0)
++            {
++                hitCounts[..commands.Length].Clear();
++                return 0;
++            }
++
++            fixed (PhysicsRayCommand3D* commandsPtr = commands)
++            fixed (int* hitCountsPtr = hitCounts)
++            fixed (PhysicsRayQueryResult3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), commandsPtr, commands.Length, resultsPtr, maxHitsPerRay, hitCountsPtr);
++            }
++        }
++
++        public unsafe int IntersectPoint(PhysicsPointQueryParameters3D parameters, Span<PhysicsShapeQueryResult3D> results)
++        {
++            fixed (PhysicsShapeQueryResult3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_point(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public unsafe int IntersectShape(PhysicsShapeQueryParameters3D parameters, Span<PhysicsShapeQueryResult3D> results)
++        {
++            fixed (PhysicsShapeQueryResult3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_intersect_shape(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public bool CastMotion(PhysicsShapeQueryParameters3D parameters, out real_t closestSafe, out real_t closestUnsafe)
++        {
++            return NativeFuncs.godotsharp_physics_direct_space_state_3d_cast_motion(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out closestSafe, out closestUnsafe).ToBool();
++        }
++
++        public unsafe int CollideShape(PhysicsShapeQueryParameters3D parameters, Span<PhysicsShapeCollision3D> results)
++        {
++            fixed (PhysicsShapeCollision3D* resultsPtr = results)
++            {
++                return NativeFuncs.godotsharp_physics_direct_space_state_3d_collide_shape(
++                    GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), resultsPtr, results.Length);
++            }
++        }
++
++        public bool TryGetRestInfo(PhysicsShapeQueryParameters3D parameters, out PhysicsShapeRestInfo3D result)
++        {
++            result = default;
++            return NativeFuncs.godotsharp_physics_direct_space_state_3d_rest_info(
++                GodotObject.GetPtr(this), GodotObject.GetPtr(parameters), out result).ToBool();
++        }
++    }
++}
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ff4fb7b8e5ea6d94c84c0d97c8c94dc0cde2ae8
+--- /dev/null
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/Core/PhysicsQueryResults.cs
+@@ -0,0 +1,110 @@
++using System.Runtime.InteropServices;
++
++#nullable enable
++
++namespace Godot
++{
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsRayQueryResult2D
++    {
++        public Vector2 Position;
++        public Vector2 Normal;
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsRayQueryResult3D
++    {
++        public Vector3 Position;
++        public Vector3 Normal;
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++        public int FaceIndex;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsRayCommand3D
++    {
++        public Vector3 From;
++        public Vector3 To;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeQueryResult2D
++    {
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeQueryResult3D
++    {
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeRestInfo2D
++    {
++        public Vector2 Point;
++        public Vector2 Normal;
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++        public Vector2 LinearVelocity;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeRestInfo3D
++    {
++        public Vector3 Point;
++        public Vector3 Normal;
++        public Rid Rid;
++        public ulong ColliderId;
++        public int Shape;
++        public Vector3 LinearVelocity;
++
++        public readonly GodotObject? GetCollider() => ColliderId == 0 ? null : GodotObject.InstanceFromId(ColliderId);
++
++        public readonly T? GetCollider<T>() where T : GodotObject => GetCollider() as T;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeCollision2D
++    {
++        public Vector2 QueryPoint;
++        public Vector2 ColliderPoint;
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct PhysicsShapeCollision3D
++    {
++        public Vector3 QueryPoint;
++        public Vector3 ColliderPoint;
++    }
++}
+diff --git forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
+index 474fdc9c9441fa7328126212550f665419266eed..b8d8348763a37684277900cbbca92263b2877db5 100644
+--- forkSrcPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
++++ forkDstPrefix/modules/mono/glue/GodotSharp/GodotSharp/GodotSharp.csproj
+@@ -117,6 +117,10 @@
+     <Compile Include="Core\NativeInterop\VariantUtils.generic.cs" />
+     <Compile Include="Core\NodePath.cs" />
+     <Compile Include="Core\Plane.cs" />
++    <Compile Include="Core\InputEventFastPath.cs" />
++    <Compile Include="Core\PhysicsDirectSpaceState2D.cs" />
++    <Compile Include="Core\PhysicsDirectSpaceState3D.cs" />
++    <Compile Include="Core\PhysicsQueryResults.cs" />
+     <Compile Include="Core\Projection.cs" />
+     <Compile Include="Core\Quaternion.cs" />
+     <Compile Include="Core\Rect2.cs" />
+diff --git forkSrcPrefix/modules/mono/glue/runtime_interop.cpp forkDstPrefix/modules/mono/glue/runtime_interop.cpp
+index 2026407c034264d48ece0202f1e821ba3074d884..9ce7957374bc976a0992ac570bbbf9711a73aa97 100644
+--- forkSrcPrefix/modules/mono/glue/runtime_interop.cpp
++++ forkDstPrefix/modules/mono/glue/runtime_interop.cpp
+@@ -41,6 +41,7 @@
+ #include "core/debugger/engine_debugger.h"
+ #include "core/debugger/script_debugger.h"
+ #include "core/io/compression.h"
++#include "core/input/input_event.h"
+ #include "core/io/marshalls.h"
+ #include "core/io/resource_loader.h"
+ #include "core/object/class_db.h"
+@@ -48,6 +49,10 @@
+ #include "core/os/os.h"
+ #include "core/string/string_name.h"
+ #include "core/variant/variant_parser.h"
++#include "servers/physics_2d/physics_server_2d.h"
++#include "servers/physics_3d/physics_server_3d.h"
++
++#include <cstddef>
+ 
+ #ifdef TOOLS_ENABLED
+ #include "editor/file_system/editor_file_system.h"
+@@ -62,10 +67,751 @@ static_assert(sizeof(SafeRefCount) == sizeof(uint32_t));
+ 
+ typedef Object *(*godotsharp_class_creation_func)(bool);
+ 
++#ifdef __cplusplus
++}
++#endif
++
++namespace {
++
++template <typename T>
++constexpr size_t align_up_size(size_t p_size) {
++	return (p_size + alignof(T) - 1) & ~(alignof(T) - 1);
++}
++
++struct godotsharp_physics_ray_query_result_2d {
++	Vector2 position;
++	Vector2 normal;
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++};
++
++struct godotsharp_physics_ray_query_result_3d {
++	Vector3 position;
++	Vector3 normal;
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++	int32_t face_index;
++};
++
++struct godotsharp_physics_ray_command_3d {
++	Vector3 from;
++	Vector3 to;
++};
++
++struct godotsharp_physics_shape_query_result_2d {
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++};
++
++struct godotsharp_physics_shape_query_result_3d {
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++};
++
++struct godotsharp_physics_shape_rest_info_2d {
++	Vector2 point;
++	Vector2 normal;
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++	Vector2 linear_velocity;
++};
++
++struct godotsharp_physics_shape_rest_info_3d {
++	Vector3 point;
++	Vector3 normal;
++	RID rid;
++	uint64_t collider_id;
++	int32_t shape;
++	Vector3 linear_velocity;
++};
++
++struct godotsharp_physics_shape_collision_2d {
++	Vector2 query_point;
++	Vector2 collider_point;
++};
++
++struct godotsharp_physics_shape_collision_3d {
++	Vector3 query_point;
++	Vector3 collider_point;
++};
++
++struct godotsharp_input_event_mouse_motion_marshaled {
++	int32_t device;
++	int64_t window_id;
++	int32_t button_mask;
++	Vector2 position;
++	Vector2 global_position;
++	Vector2 relative;
++	Vector2 screen_relative;
++	Vector2 velocity;
++	Vector2 screen_velocity;
++	Vector2 tilt;
++	float pressure;
++	uint8_t canceled;
++	uint8_t shift_pressed;
++	uint8_t alt_pressed;
++	uint8_t ctrl_pressed;
++	uint8_t meta_pressed;
++	uint8_t command_or_control_autoremap;
++	uint8_t pen_inverted;
++};
++
++struct godotsharp_input_event_mouse_button_marshaled {
++	int32_t device;
++	int64_t window_id;
++	int32_t button_mask;
++	Vector2 position;
++	Vector2 global_position;
++	float factor;
++	int32_t button_index;
++	uint8_t canceled;
++	uint8_t pressed;
++	uint8_t double_click;
++	uint8_t shift_pressed;
++	uint8_t alt_pressed;
++	uint8_t ctrl_pressed;
++	uint8_t meta_pressed;
++	uint8_t command_or_control_autoremap;
++};
++
++struct godotsharp_input_event_key_marshaled {
++	int32_t device;
++	int64_t window_id;
++	int32_t keycode;
++	int32_t physical_keycode;
++	int32_t key_label;
++	uint32_t unicode;
++	int32_t location;
++	uint8_t canceled;
++	uint8_t pressed;
++	uint8_t echo;
++	uint8_t shift_pressed;
++	uint8_t alt_pressed;
++	uint8_t ctrl_pressed;
++	uint8_t meta_pressed;
++	uint8_t command_or_control_autoremap;
++};
++
++static_assert(offsetof(godotsharp_physics_ray_query_result_2d, position) == 0);
++static_assert(offsetof(godotsharp_physics_ray_query_result_2d, normal) == align_up_size<Vector2>(sizeof(Vector2)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_2d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_ray_query_result_2d, normal) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_2d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_ray_query_result_2d, rid) + sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_2d, collider_id) + sizeof(uint64_t)));
++static_assert(sizeof(godotsharp_physics_ray_query_result_2d) == align_up_size<godotsharp_physics_ray_query_result_2d>(offsetof(godotsharp_physics_ray_query_result_2d, shape) + sizeof(int32_t)));
++
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, position) == 0);
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, normal) == align_up_size<Vector3>(sizeof(Vector3)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_ray_query_result_3d, normal) + sizeof(Vector3)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_ray_query_result_3d, rid) + sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) + sizeof(uint64_t)));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, face_index) == align_up_size<int32_t>(offsetof(godotsharp_physics_ray_query_result_3d, shape) + sizeof(int32_t)));
++static_assert(sizeof(godotsharp_physics_ray_query_result_3d) == align_up_size<godotsharp_physics_ray_query_result_3d>(offsetof(godotsharp_physics_ray_query_result_3d, face_index) + sizeof(int32_t)));
++static_assert(sizeof(godotsharp_physics_ray_query_result_3d) == sizeof(PhysicsDirectSpaceState3D::RayBatchResult));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, position) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, position));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, normal) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, normal));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, rid) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, rid));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, collider_id) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, collider_id));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, shape) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, shape));
++static_assert(offsetof(godotsharp_physics_ray_query_result_3d, face_index) == offsetof(PhysicsDirectSpaceState3D::RayBatchResult, face_index));
++
++static_assert(offsetof(godotsharp_physics_ray_command_3d, from) == 0);
++static_assert(offsetof(godotsharp_physics_ray_command_3d, to) == align_up_size<Vector3>(sizeof(Vector3)));
++static_assert(sizeof(godotsharp_physics_ray_command_3d) == align_up_size<godotsharp_physics_ray_command_3d>(offsetof(godotsharp_physics_ray_command_3d, to) + sizeof(Vector3)));
++static_assert(sizeof(godotsharp_physics_ray_command_3d) == sizeof(PhysicsDirectSpaceState3D::RayCommand));
++static_assert(offsetof(godotsharp_physics_ray_command_3d, from) == offsetof(PhysicsDirectSpaceState3D::RayCommand, from));
++static_assert(offsetof(godotsharp_physics_ray_command_3d, to) == offsetof(PhysicsDirectSpaceState3D::RayCommand, to));
++
++static_assert(offsetof(godotsharp_physics_shape_query_result_2d, rid) == 0);
++static_assert(offsetof(godotsharp_physics_shape_query_result_2d, collider_id) == align_up_size<uint64_t>(sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_shape_query_result_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_query_result_2d, collider_id) + sizeof(uint64_t)));
++static_assert(sizeof(godotsharp_physics_shape_query_result_2d) == align_up_size<godotsharp_physics_shape_query_result_2d>(offsetof(godotsharp_physics_shape_query_result_2d, shape) + sizeof(int32_t)));
++
++static_assert(offsetof(godotsharp_physics_shape_query_result_3d, rid) == 0);
++static_assert(offsetof(godotsharp_physics_shape_query_result_3d, collider_id) == align_up_size<uint64_t>(sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_shape_query_result_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_query_result_3d, collider_id) + sizeof(uint64_t)));
++static_assert(sizeof(godotsharp_physics_shape_query_result_3d) == align_up_size<godotsharp_physics_shape_query_result_3d>(offsetof(godotsharp_physics_shape_query_result_3d, shape) + sizeof(int32_t)));
++
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, point) == 0);
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, normal) == align_up_size<Vector2>(sizeof(Vector2)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_shape_rest_info_2d, normal) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_shape_rest_info_2d, rid) + sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_rest_info_2d, collider_id) + sizeof(uint64_t)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_2d, linear_velocity) == align_up_size<Vector2>(offsetof(godotsharp_physics_shape_rest_info_2d, shape) + sizeof(int32_t)));
++static_assert(sizeof(godotsharp_physics_shape_rest_info_2d) == align_up_size<godotsharp_physics_shape_rest_info_2d>(offsetof(godotsharp_physics_shape_rest_info_2d, linear_velocity) + sizeof(Vector2)));
++
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, point) == 0);
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, normal) == align_up_size<Vector3>(sizeof(Vector3)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, rid) == align_up_size<RID>(offsetof(godotsharp_physics_shape_rest_info_3d, normal) + sizeof(Vector3)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, collider_id) == align_up_size<uint64_t>(offsetof(godotsharp_physics_shape_rest_info_3d, rid) + sizeof(RID)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, shape) == align_up_size<int32_t>(offsetof(godotsharp_physics_shape_rest_info_3d, collider_id) + sizeof(uint64_t)));
++static_assert(offsetof(godotsharp_physics_shape_rest_info_3d, linear_velocity) == align_up_size<Vector3>(offsetof(godotsharp_physics_shape_rest_info_3d, shape) + sizeof(int32_t)));
++static_assert(sizeof(godotsharp_physics_shape_rest_info_3d) == align_up_size<godotsharp_physics_shape_rest_info_3d>(offsetof(godotsharp_physics_shape_rest_info_3d, linear_velocity) + sizeof(Vector3)));
++
++static_assert(offsetof(godotsharp_physics_shape_collision_2d, query_point) == 0);
++static_assert(offsetof(godotsharp_physics_shape_collision_2d, collider_point) == align_up_size<Vector2>(sizeof(Vector2)));
++static_assert(sizeof(godotsharp_physics_shape_collision_2d) == sizeof(Vector2) * 2);
++
++static_assert(offsetof(godotsharp_physics_shape_collision_3d, query_point) == 0);
++static_assert(offsetof(godotsharp_physics_shape_collision_3d, collider_point) == align_up_size<Vector3>(sizeof(Vector3)));
++static_assert(sizeof(godotsharp_physics_shape_collision_3d) == sizeof(Vector3) * 2);
++
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, device) == 0);
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, button_mask) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_motion_marshaled, window_id) + sizeof(int64_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, button_mask) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, global_position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, position) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, relative) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, global_position) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_relative) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, relative) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, velocity) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_relative) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_velocity) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, velocity) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, tilt) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_motion_marshaled, screen_velocity) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, pressure) == align_up_size<float>(offsetof(godotsharp_input_event_mouse_motion_marshaled, tilt) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_mouse_motion_marshaled, pressure) + sizeof(float)));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, shift_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, canceled) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, alt_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, shift_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, alt_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, meta_pressed) == offsetof(godotsharp_input_event_mouse_motion_marshaled, ctrl_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_mouse_motion_marshaled, meta_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_motion_marshaled, pen_inverted) == offsetof(godotsharp_input_event_mouse_motion_marshaled, command_or_control_autoremap) + sizeof(uint8_t));
++
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, device) == 0);
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, button_mask) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, window_id) + sizeof(int64_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_button_marshaled, button_mask) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, global_position) == align_up_size<Vector2>(offsetof(godotsharp_input_event_mouse_button_marshaled, position) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, factor) == align_up_size<float>(offsetof(godotsharp_input_event_mouse_button_marshaled, global_position) + sizeof(Vector2)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, button_index) == align_up_size<int32_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, factor) + sizeof(float)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_mouse_button_marshaled, button_index) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, canceled) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, double_click) == offsetof(godotsharp_input_event_mouse_button_marshaled, pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, shift_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, double_click) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, alt_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, shift_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, alt_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, meta_pressed) == offsetof(godotsharp_input_event_mouse_button_marshaled, ctrl_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_mouse_button_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_mouse_button_marshaled, meta_pressed) + sizeof(uint8_t));
++
++static_assert(offsetof(godotsharp_input_event_key_marshaled, device) == 0);
++static_assert(offsetof(godotsharp_input_event_key_marshaled, window_id) == align_up_size<int64_t>(sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, keycode) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, window_id) + sizeof(int64_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, physical_keycode) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, keycode) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, key_label) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, physical_keycode) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, unicode) == align_up_size<uint32_t>(offsetof(godotsharp_input_event_key_marshaled, key_label) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, location) == align_up_size<int32_t>(offsetof(godotsharp_input_event_key_marshaled, unicode) + sizeof(uint32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, canceled) == align_up_size<uint8_t>(offsetof(godotsharp_input_event_key_marshaled, location) + sizeof(int32_t)));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, pressed) == offsetof(godotsharp_input_event_key_marshaled, canceled) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, echo) == offsetof(godotsharp_input_event_key_marshaled, pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, shift_pressed) == offsetof(godotsharp_input_event_key_marshaled, echo) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, alt_pressed) == offsetof(godotsharp_input_event_key_marshaled, shift_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, ctrl_pressed) == offsetof(godotsharp_input_event_key_marshaled, alt_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, meta_pressed) == offsetof(godotsharp_input_event_key_marshaled, ctrl_pressed) + sizeof(uint8_t));
++static_assert(offsetof(godotsharp_input_event_key_marshaled, command_or_control_autoremap) == offsetof(godotsharp_input_event_key_marshaled, meta_pressed) + sizeof(uint8_t));
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::RayResult &p_native, godotsharp_physics_ray_query_result_2d &r_result) {
++	r_result.position = p_native.position;
++	r_result.normal = p_native.normal;
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++}
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::RayResult &p_native, godotsharp_physics_ray_query_result_3d &r_result) {
++	r_result.position = p_native.position;
++	r_result.normal = p_native.normal;
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++	r_result.face_index = p_native.face_index;
++}
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::ShapeResult &p_native, godotsharp_physics_shape_query_result_2d &r_result) {
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++}
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::ShapeResult &p_native, godotsharp_physics_shape_query_result_3d &r_result) {
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++}
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState2D::ShapeRestInfo &p_native, godotsharp_physics_shape_rest_info_2d &r_result) {
++	r_result.point = p_native.point;
++	r_result.normal = p_native.normal;
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++	r_result.linear_velocity = p_native.linear_velocity;
++}
++
++static _FORCE_INLINE_ void godotsharp_physics_query_assign_result(const PhysicsDirectSpaceState3D::ShapeRestInfo &p_native, godotsharp_physics_shape_rest_info_3d &r_result) {
++	r_result.point = p_native.point;
++	r_result.normal = p_native.normal;
++	r_result.rid = p_native.rid;
++	r_result.collider_id = (uint64_t)p_native.collider_id;
++	r_result.shape = p_native.shape;
++	r_result.linear_velocity = p_native.linear_velocity;
++}
++
++static _FORCE_INLINE_ uint8_t godotsharp_input_event_bool(bool p_value) {
++	return p_value ? 1 : 0;
++}
++
++static _FORCE_INLINE_ void godotsharp_input_event_assign_common(const InputEvent *p_event, int32_t &r_device, uint8_t &r_canceled) {
++	r_device = p_event->get_device();
++	r_canceled = godotsharp_input_event_bool(p_event->is_canceled());
++}
++
++static _FORCE_INLINE_ void godotsharp_input_event_assign_window(const InputEventFromWindow *p_event, int64_t &r_window_id) {
++	r_window_id = p_event->get_window_id();
++}
++
++static _FORCE_INLINE_ void godotsharp_input_event_assign_modifiers(const InputEventWithModifiers *p_event,
++		uint8_t &r_shift_pressed,
++		uint8_t &r_alt_pressed,
++		uint8_t &r_ctrl_pressed,
++		uint8_t &r_meta_pressed,
++		uint8_t &r_command_or_control_autoremap) {
++	r_shift_pressed = godotsharp_input_event_bool(p_event->is_shift_pressed());
++	r_alt_pressed = godotsharp_input_event_bool(p_event->is_alt_pressed());
++	r_ctrl_pressed = godotsharp_input_event_bool(p_event->is_ctrl_pressed());
++	r_meta_pressed = godotsharp_input_event_bool(p_event->is_meta_pressed());
++	r_command_or_control_autoremap = godotsharp_input_event_bool(p_event->is_command_or_control_autoremap());
++}
++
++static _FORCE_INLINE_ void godotsharp_input_event_assign_mouse(const InputEventMouse *p_event,
++		int32_t &r_button_mask,
++		Vector2 &r_position,
++		Vector2 &r_global_position) {
++	r_button_mask = (int32_t)p_event->get_button_mask();
++	r_position = p_event->get_position();
++	r_global_position = p_event->get_global_position();
++}
++
++} // namespace
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
+ bool godotsharp_dotnet_module_is_initialized() {
+ 	return GDMono::get_singleton()->is_initialized();
+ }
+ 
++bool godotsharp_physics_direct_space_state_2d_intersect_ray(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsRayQueryParameters2D *p_parameters,
++		godotsharp_physics_ray_query_result_2d *r_result) {
++	if (r_result != nullptr) {
++		*r_result = {};
++	}
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++	ERR_FAIL_NULL_V(r_result, false);
++
++	PhysicsDirectSpaceState2D::RayResult result;
++	if (!p_space_state->intersect_ray(p_parameters->get_parameters(), result)) {
++		return false;
++	}
++
++	godotsharp_physics_query_assign_result(result, *r_result);
++	return true;
++}
++
++int32_t godotsharp_physics_direct_space_state_2d_intersect_point(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsPointQueryParameters2D *p_parameters,
++		godotsharp_physics_shape_query_result_2d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	Vector<PhysicsDirectSpaceState2D::ShapeResult> native_results;
++	native_results.resize(p_result_max);
++	const int32_t result_count = p_space_state->intersect_point(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
++	for (int32_t i = 0; i < result_count; i++) {
++		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
++	}
++	return result_count;
++}
++
++int32_t godotsharp_physics_direct_space_state_2d_intersect_shape(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsShapeQueryParameters2D *p_parameters,
++		godotsharp_physics_shape_query_result_2d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	Vector<PhysicsDirectSpaceState2D::ShapeResult> native_results;
++	native_results.resize(p_result_max);
++	const int32_t result_count = p_space_state->intersect_shape(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
++	for (int32_t i = 0; i < result_count; i++) {
++		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
++	}
++	return result_count;
++}
++
++bool godotsharp_physics_direct_space_state_2d_cast_motion(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsShapeQueryParameters2D *p_parameters,
++		real_t *r_closest_safe, real_t *r_closest_unsafe) {
++	ERR_FAIL_NULL_V(r_closest_safe, false);
++	ERR_FAIL_NULL_V(r_closest_unsafe, false);
++
++	*r_closest_safe = 1.0;
++	*r_closest_unsafe = 1.0;
++
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++
++	return p_space_state->cast_motion(p_parameters->get_parameters(), *r_closest_safe, *r_closest_unsafe);
++}
++
++int32_t godotsharp_physics_direct_space_state_2d_collide_shape(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsShapeQueryParameters2D *p_parameters,
++		godotsharp_physics_shape_collision_2d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	int result_count = 0;
++	if (!p_space_state->collide_shape(p_parameters->get_parameters(), reinterpret_cast<Vector2 *>(r_results), p_result_max * 2, result_count)) {
++		return 0;
++	}
++
++	return result_count / 2;
++}
++
++bool godotsharp_physics_direct_space_state_2d_rest_info(PhysicsDirectSpaceState2D *p_space_state,
++		PhysicsShapeQueryParameters2D *p_parameters,
++		godotsharp_physics_shape_rest_info_2d *r_result) {
++	if (r_result != nullptr) {
++		*r_result = {};
++	}
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++	ERR_FAIL_NULL_V(r_result, false);
++
++	PhysicsDirectSpaceState2D::ShapeRestInfo result;
++	if (!p_space_state->rest_info(p_parameters->get_parameters(), &result)) {
++		return false;
++	}
++
++	godotsharp_physics_query_assign_result(result, *r_result);
++	return true;
++}
++
++bool godotsharp_physics_direct_space_state_3d_intersect_ray(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsRayQueryParameters3D *p_parameters,
++		godotsharp_physics_ray_query_result_3d *r_result) {
++	if (r_result != nullptr) {
++		*r_result = {};
++	}
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++	ERR_FAIL_NULL_V(r_result, false);
++
++	PhysicsDirectSpaceState3D::RayResult result;
++	if (!p_space_state->intersect_ray(p_parameters->get_parameters(), result)) {
++		return false;
++	}
++
++	godotsharp_physics_query_assign_result(result, *r_result);
++	return true;
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_all(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsRayQueryParameters3D *p_parameters,
++		godotsharp_physics_ray_query_result_3d *r_results,
++		int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	return p_space_state->intersect_ray_all(
++			p_parameters->get_parameters(),
++			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
++			p_result_max);
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_batch(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsRayQueryParameters3D *p_parameters,
++		const godotsharp_physics_ray_command_3d *p_commands,
++		int32_t p_command_count,
++		godotsharp_physics_ray_query_result_3d *r_results) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	return p_space_state->intersect_ray_batch(
++			p_parameters->get_parameters(),
++			reinterpret_cast<const PhysicsDirectSpaceState3D::RayCommand *>(p_commands),
++			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
++			p_command_count);
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsRayQueryParameters3D *p_parameters,
++		const godotsharp_physics_ray_command_3d *p_commands,
++		int32_t p_command_count,
++		godotsharp_physics_ray_query_result_3d *r_results,
++		int32_t p_max_results_per_command,
++		int32_t *r_result_counts) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++	ERR_FAIL_COND_V(p_max_results_per_command < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_result_counts, 0);
++
++	if (p_max_results_per_command == 0) {
++		for (int32_t i = 0; i < p_command_count; i++) {
++			r_result_counts[i] = 0;
++		}
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	return p_space_state->intersect_ray_batch_all(
++			p_parameters->get_parameters(),
++			reinterpret_cast<const PhysicsDirectSpaceState3D::RayCommand *>(p_commands),
++			p_command_count,
++			reinterpret_cast<PhysicsDirectSpaceState3D::RayBatchResult *>(r_results),
++			p_max_results_per_command,
++			reinterpret_cast<int *>(r_result_counts));
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_intersect_point(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsPointQueryParameters3D *p_parameters,
++		godotsharp_physics_shape_query_result_3d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	Vector<PhysicsDirectSpaceState3D::ShapeResult> native_results;
++	native_results.resize(p_result_max);
++	const int32_t result_count = p_space_state->intersect_point(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
++	for (int32_t i = 0; i < result_count; i++) {
++		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
++	}
++	return result_count;
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_intersect_shape(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsShapeQueryParameters3D *p_parameters,
++		godotsharp_physics_shape_query_result_3d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	Vector<PhysicsDirectSpaceState3D::ShapeResult> native_results;
++	native_results.resize(p_result_max);
++	const int32_t result_count = p_space_state->intersect_shape(p_parameters->get_parameters(), native_results.ptrw(), p_result_max);
++	for (int32_t i = 0; i < result_count; i++) {
++		godotsharp_physics_query_assign_result(native_results[i], r_results[i]);
++	}
++	return result_count;
++}
++
++bool godotsharp_physics_direct_space_state_3d_cast_motion(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsShapeQueryParameters3D *p_parameters,
++		real_t *r_closest_safe, real_t *r_closest_unsafe) {
++	ERR_FAIL_NULL_V(r_closest_safe, false);
++	ERR_FAIL_NULL_V(r_closest_unsafe, false);
++
++	*r_closest_safe = 1.0;
++	*r_closest_unsafe = 1.0;
++
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++
++	return p_space_state->cast_motion(p_parameters->get_parameters(), *r_closest_safe, *r_closest_unsafe);
++}
++
++int32_t godotsharp_physics_direct_space_state_3d_collide_shape(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsShapeQueryParameters3D *p_parameters,
++		godotsharp_physics_shape_collision_3d *r_results, int32_t p_result_max) {
++	ERR_FAIL_NULL_V(p_space_state, 0);
++	ERR_FAIL_NULL_V(p_parameters, 0);
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	int result_count = 0;
++	if (!p_space_state->collide_shape(p_parameters->get_parameters(), reinterpret_cast<Vector3 *>(r_results), p_result_max * 2, result_count)) {
++		return 0;
++	}
++
++	return result_count / 2;
++}
++
++bool godotsharp_physics_direct_space_state_3d_rest_info(PhysicsDirectSpaceState3D *p_space_state,
++		PhysicsShapeQueryParameters3D *p_parameters,
++		godotsharp_physics_shape_rest_info_3d *r_result) {
++	if (r_result != nullptr) {
++		*r_result = {};
++	}
++	ERR_FAIL_NULL_V(p_space_state, false);
++	ERR_FAIL_NULL_V(p_parameters, false);
++	ERR_FAIL_NULL_V(r_result, false);
++
++	PhysicsDirectSpaceState3D::ShapeRestInfo result;
++	if (!p_space_state->rest_info(p_parameters->get_parameters(), &result)) {
++		return false;
++	}
++
++	godotsharp_physics_query_assign_result(result, *r_result);
++	return true;
++}
++
++int32_t godotsharp_input_event_get_fast_type(Object *p_event) {
++	if (Object::cast_to<InputEventMouseMotion>(p_event) != nullptr) {
++		return 1;
++	}
++	if (Object::cast_to<InputEventMouseButton>(p_event) != nullptr) {
++		return 2;
++	}
++	if (Object::cast_to<InputEventKey>(p_event) != nullptr) {
++		return 3;
++	}
++	return 0;
++}
++
++void godotsharp_input_event_as_mouse_motion(Object *p_event, godotsharp_input_event_mouse_motion_marshaled *r_event) {
++	if (r_event != nullptr) {
++		*r_event = {};
++	}
++	ERR_FAIL_NULL(p_event);
++	ERR_FAIL_NULL(r_event);
++
++	const InputEventMouseMotion *event = Object::cast_to<InputEventMouseMotion>(p_event);
++	ERR_FAIL_NULL(event);
++
++	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
++	godotsharp_input_event_assign_window(event, r_event->window_id);
++	godotsharp_input_event_assign_modifiers(event,
++			r_event->shift_pressed,
++			r_event->alt_pressed,
++			r_event->ctrl_pressed,
++			r_event->meta_pressed,
++			r_event->command_or_control_autoremap);
++	godotsharp_input_event_assign_mouse(event, r_event->button_mask, r_event->position, r_event->global_position);
++	r_event->relative = event->get_relative();
++	r_event->screen_relative = event->get_relative_screen_position();
++	r_event->velocity = event->get_velocity();
++	r_event->screen_velocity = event->get_screen_velocity();
++	r_event->tilt = event->get_tilt();
++	r_event->pressure = event->get_pressure();
++	r_event->pen_inverted = godotsharp_input_event_bool(event->get_pen_inverted());
++}
++
++void godotsharp_input_event_as_mouse_button(Object *p_event, godotsharp_input_event_mouse_button_marshaled *r_event) {
++	if (r_event != nullptr) {
++		*r_event = {};
++	}
++	ERR_FAIL_NULL(p_event);
++	ERR_FAIL_NULL(r_event);
++
++	const InputEventMouseButton *event = Object::cast_to<InputEventMouseButton>(p_event);
++	ERR_FAIL_NULL(event);
++
++	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
++	godotsharp_input_event_assign_window(event, r_event->window_id);
++	godotsharp_input_event_assign_modifiers(event,
++			r_event->shift_pressed,
++			r_event->alt_pressed,
++			r_event->ctrl_pressed,
++			r_event->meta_pressed,
++			r_event->command_or_control_autoremap);
++	godotsharp_input_event_assign_mouse(event, r_event->button_mask, r_event->position, r_event->global_position);
++	r_event->factor = event->get_factor();
++	r_event->button_index = (int32_t)event->get_button_index();
++	r_event->pressed = godotsharp_input_event_bool(event->is_pressed());
++	r_event->double_click = godotsharp_input_event_bool(event->is_double_click());
++}
++
++void godotsharp_input_event_as_key(Object *p_event, godotsharp_input_event_key_marshaled *r_event) {
++	if (r_event != nullptr) {
++		*r_event = {};
++	}
++	ERR_FAIL_NULL(p_event);
++	ERR_FAIL_NULL(r_event);
++
++	const InputEventKey *event = Object::cast_to<InputEventKey>(p_event);
++	ERR_FAIL_NULL(event);
++
++	godotsharp_input_event_assign_common(event, r_event->device, r_event->canceled);
++	godotsharp_input_event_assign_window(event, r_event->window_id);
++	godotsharp_input_event_assign_modifiers(event,
++			r_event->shift_pressed,
++			r_event->alt_pressed,
++			r_event->ctrl_pressed,
++			r_event->meta_pressed,
++			r_event->command_or_control_autoremap);
++	r_event->keycode = (int32_t)event->get_keycode();
++	r_event->physical_keycode = (int32_t)event->get_physical_keycode();
++	r_event->key_label = (int32_t)event->get_key_label();
++	r_event->unicode = (uint32_t)event->get_unicode();
++	r_event->location = (int32_t)event->get_location();
++	r_event->pressed = godotsharp_input_event_bool(event->is_pressed());
++	r_event->echo = godotsharp_input_event_bool(event->is_echo());
++}
++
+ MethodBind *godotsharp_method_bind_get_method(const StringName *p_classname, const StringName *p_methodname) {
+ 	return ClassDB::get_method(*p_classname, *p_methodname);
+ }
+@@ -1670,6 +2416,25 @@ static const void *unmanaged_callbacks[]{
+ 	(void *)godotsharp_color_get_ok_hsl_h,
+ 	(void *)godotsharp_color_get_ok_hsl_s,
+ 	(void *)godotsharp_color_get_ok_hsl_l,
++	(void *)godotsharp_physics_direct_space_state_2d_intersect_ray,
++	(void *)godotsharp_physics_direct_space_state_2d_intersect_point,
++	(void *)godotsharp_physics_direct_space_state_2d_intersect_shape,
++	(void *)godotsharp_physics_direct_space_state_2d_cast_motion,
++	(void *)godotsharp_physics_direct_space_state_2d_collide_shape,
++	(void *)godotsharp_physics_direct_space_state_2d_rest_info,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_all,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_batch,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_ray_batch_all,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_point,
++	(void *)godotsharp_physics_direct_space_state_3d_intersect_shape,
++	(void *)godotsharp_physics_direct_space_state_3d_cast_motion,
++	(void *)godotsharp_physics_direct_space_state_3d_collide_shape,
++	(void *)godotsharp_physics_direct_space_state_3d_rest_info,
++	(void *)godotsharp_input_event_get_fast_type,
++	(void *)godotsharp_input_event_as_mouse_motion,
++	(void *)godotsharp_input_event_as_mouse_button,
++	(void *)godotsharp_input_event_as_key,
+ 	(void *)godotsharp_method_bind_ptrcall,
+ 	(void *)godotsharp_method_bind_call,
+ 	(void *)godotsharp_variant_new_string_name,
+diff --git forkSrcPrefix/servers/physics_3d/physics_server_3d.cpp forkDstPrefix/servers/physics_3d/physics_server_3d.cpp
+index 67dee00fe2d9d8d11fb361ab7eaece0341e234b2..e96d449462cad8984b221fcde84482c1fbf50657 100644
+--- forkSrcPrefix/servers/physics_3d/physics_server_3d.cpp
++++ forkDstPrefix/servers/physics_3d/physics_server_3d.cpp
+@@ -34,6 +34,28 @@
+ #include "core/object/class_db.h"
+ #include "core/variant/typed_array.h"
+ 
++namespace {
++
++static _FORCE_INLINE_ void physics_direct_space_state_assign_ray_result(const PhysicsDirectSpaceState3D::RayResult &p_source, PhysicsDirectSpaceState3D::RayBatchResult &r_dest) {
++	r_dest.position = p_source.position;
++	r_dest.normal = p_source.normal;
++	r_dest.rid = p_source.rid;
++	r_dest.collider_id = (uint64_t)p_source.collider_id;
++	r_dest.shape = p_source.shape;
++	r_dest.face_index = p_source.face_index;
++}
++
++static _FORCE_INLINE_ void physics_direct_space_state_clear_ray_result(PhysicsDirectSpaceState3D::RayBatchResult &r_result) {
++	r_result.position = Vector3();
++	r_result.normal = Vector3();
++	r_result.rid = RID();
++	r_result.collider_id = 0;
++	r_result.shape = 0;
++	r_result.face_index = 0;
++}
++
++} // namespace
++
+ void PhysicsServer3DRenderingServerHandler::set_vertex(int p_vertex_id, const Vector3 &p_vertex) {
+ 	GDVIRTUAL_CALL(_set_vertex, p_vertex_id, p_vertex);
+ }
+@@ -383,6 +405,89 @@ Dictionary PhysicsDirectSpaceState3D::_intersect_ray(RequiredParam<PhysicsRayQue
+ 	return d;
+ }
+ 
++int PhysicsDirectSpaceState3D::intersect_ray_all(const RayParameters &p_parameters, RayBatchResult *r_results, int p_result_max) {
++	ERR_FAIL_COND_V(p_result_max < 0, 0);
++
++	if (p_result_max == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	RayResult result;
++	if (!intersect_ray(p_parameters, result)) {
++		return 0;
++	}
++
++	physics_direct_space_state_assign_ray_result(result, r_results[0]);
++	return 1;
++}
++
++int PhysicsDirectSpaceState3D::intersect_ray_batch(const RayParameters &p_parameters, const RayCommand *p_commands, RayBatchResult *r_results, int p_command_count) {
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	RayParameters ray_parameters = p_parameters;
++	int hit_count = 0;
++
++	for (int i = 0; i < p_command_count; i++) {
++		ray_parameters.from = p_commands[i].from;
++		ray_parameters.to = p_commands[i].to;
++		physics_direct_space_state_clear_ray_result(r_results[i]);
++
++		RayResult result;
++		if (!intersect_ray(ray_parameters, result)) {
++			continue;
++		}
++
++		physics_direct_space_state_assign_ray_result(result, r_results[i]);
++		hit_count++;
++	}
++
++	return hit_count;
++}
++
++int PhysicsDirectSpaceState3D::intersect_ray_batch_all(const RayParameters &p_parameters, const RayCommand *p_commands, int p_command_count, RayBatchResult *r_results, int p_max_results_per_command, int *r_result_counts) {
++	ERR_FAIL_COND_V(p_command_count < 0, 0);
++	ERR_FAIL_COND_V(p_max_results_per_command < 0, 0);
++
++	if (p_command_count == 0) {
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(p_commands, 0);
++	ERR_FAIL_NULL_V(r_result_counts, 0);
++
++	if (p_max_results_per_command == 0) {
++		for (int i = 0; i < p_command_count; i++) {
++			r_result_counts[i] = 0;
++		}
++		return 0;
++	}
++
++	ERR_FAIL_NULL_V(r_results, 0);
++
++	RayParameters ray_parameters = p_parameters;
++	int hit_count = 0;
++
++	for (int i = 0; i < p_command_count; i++) {
++		ray_parameters.from = p_commands[i].from;
++		ray_parameters.to = p_commands[i].to;
++
++		const int ray_hit_count = intersect_ray_all(ray_parameters, r_results + (i * p_max_results_per_command), p_max_results_per_command);
++		r_result_counts[i] = ray_hit_count;
++		hit_count += ray_hit_count;
++	}
++
++	return hit_count;
++}
++
+ TypedArray<Dictionary> PhysicsDirectSpaceState3D::_intersect_point(RequiredParam<PhysicsPointQueryParameters3D> rp_point_query, int p_max_results) {
+ 	EXTRACT_PARAM_OR_FAIL_V(p_point_query, rp_point_query, TypedArray<Dictionary>());
+ 

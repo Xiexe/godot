@@ -1,0 +1,14 @@
+diff --git forkSrcPrefix/.gitignore forkDstPrefix/.gitignore
+index 880bacbffa6deb1fc43a5232121c45e55a58b263..019b9711c0786d52caff4b25b492af23ff600000 100644
+--- forkSrcPrefix/.gitignore
++++ forkDstPrefix/.gitignore
+@@ -395,3 +395,9 @@ $RECYCLE.BIN/
+ *.msp
+ *.lnk
+ *.generated.props
++
++# Nuget Sources / Generated
++
++.nuget
++.dotnet
++/nuget_godot_cache

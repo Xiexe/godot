@@ -1,0 +1,388 @@
+diff --git forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.cpp forkDstPrefix/servers/rendering/renderer_rd/environment/gi.cpp
+index d12e057d9100a942f487869856aa9e84133e4924..6fce5f5fafca144093bb2a539c9dc2590c553d7d 100644
+--- forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.cpp
++++ forkDstPrefix/servers/rendering/renderer_rd/environment/gi.cpp
+@@ -1247,6 +1247,14 @@ void GI::SDFGI::update(RID p_env, const Vector3 &p_world_position) {
+ }
+ 
+ void GI::SDFGI::update_light() {
++	for (uint32_t i = 0; i < cascades.size(); i++) {
++		const SDFGI::Cascade &cascade = cascades[i];
++		if (!cascade.sdf_direct_light_dynamic_render_uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(cascade.sdf_direct_light_dynamic_render_uniform_set)) {
++			ERR_PRINT_ONCE("SDFGI dynamic light update skipped because the render uniform set is missing.");
++			return;
++		}
++	}
++
+ 	RD::get_singleton()->draw_command_begin_label("SDFGI Update Dynamic Light");
+ 
+ 	for (uint32_t i = 0; i < cascades.size(); i++) {
+@@ -1268,6 +1276,9 @@ void GI::SDFGI::update_light() {
+ 	push_constant.bounce_feedback = bounce_feedback;
+ 	push_constant.y_mult = y_mult;
+ 	push_constant.use_occlusion = uses_occlusion;
++	for (int i = 0; i < 12; i++) {
++		push_constant.camera_inv_transform[i] = direct_light_camera_inv_transform[i];
++	}
+ 
+ 	for (uint32_t i = 0; i < cascades.size(); i++) {
+ 		SDFGI::Cascade &cascade = cascades[i];
+@@ -1812,9 +1823,9 @@ void GI::SDFGI::debug_probes(RID p_framebuffer, const uint32_t p_view_count, con
+ 	RD::get_singleton()->draw_list_end();
+ }
+ 
+-void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data) {
++bool GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data) {
+ 	if (p_render_data->sdfgi_update_data == nullptr) {
+-		return;
++		return false;
+ 	}
+ 
+ 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
+@@ -1893,6 +1904,7 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+ 	}
+ 
+ 	RD::get_singleton()->buffer_update(gi->sdfgi_ubo, 0, sizeof(SDFGIData), &sdfgi_data);
++	RendererRD::MaterialStorage::store_transform_transposed_3x4(p_transform.affine_inverse(), direct_light_camera_inv_transform);
+ 
+ 	/* Update dynamic lights in SDFGI cascades */
+ 
+@@ -1901,10 +1913,14 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+ 
+ 		SDFGIShader::Light lights[SDFGI::MAX_DYNAMIC_LIGHTS];
+ 		uint32_t idx = 0;
++		uint32_t directional_shadow_index = 0;
+ 		for (uint32_t j = 0; j < (uint32_t)p_render_data->sdfgi_update_data->directional_lights->size(); j++) {
+ 			if (idx == SDFGI::MAX_DYNAMIC_LIGHTS) {
+ 				break;
+ 			}
++			if (directional_shadow_index == light_storage->get_max_directional_lights()) {
++				break;
++			}
+ 
+ 			RID light_instance = p_render_data->sdfgi_update_data->directional_lights->get(j);
+ 			ERR_CONTINUE(!light_storage->owns_light_instance(light_instance));
+@@ -1938,6 +1954,9 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+ 			}
+ 
+ 			lights[idx].has_shadow = RSG::light_storage->light_has_shadow(light);
++			// Directional lights read their shadow data from the shared renderer UBO.
++			lights[idx].radius = float(directional_shadow_index);
++			directional_shadow_index++;
+ 
+ 			idx++;
+ 		}
+@@ -2055,9 +2074,33 @@ void GI::SDFGI::pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_r
+ 			u.append_id(texture_storage->area_light_atlas_get_texture());
+ 			uniforms.push_back(u);
+ 		}
++		{
++			RD::Uniform u;
++			u.binding = 1;
++			u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
++			if (light_storage->directional_shadow_get_texture().is_valid()) {
++				u.append_id(light_storage->directional_shadow_get_texture());
++			} else {
++				u.append_id(texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE));
++			}
++			uniforms.push_back(u);
++		}
++		{
++			RD::Uniform u;
++			u.binding = 2;
++			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
++			u.append_id(light_storage->get_directional_light_buffer());
++			uniforms.push_back(u);
++		}
+ 		cascade.sdf_direct_light_static_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_STATIC), 1, uniforms);
+ 		cascade.sdf_direct_light_dynamic_render_uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(gi->sdfgi_shader.direct_light.version_get_shader(gi->sdfgi_shader.direct_light_shader, SDFGIShader::DIRECT_LIGHT_MODE_DYNAMIC), 1, uniforms);
++		if (!cascade.sdf_direct_light_static_render_uniform_set.is_valid() || !cascade.sdf_direct_light_dynamic_render_uniform_set.is_valid()) {
++			ERR_PRINT_ONCE("SDFGI direct light render uniform set creation failed.");
++			return false;
++		}
+ 	}
++
++	return true;
+ }
+ 
+ void GI::SDFGI::render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_region, const PagedArray<RenderGeometryInstance *> &p_instances, float p_exposure_normalization) {
+@@ -2469,13 +2512,12 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
+ 				}
+ 
+ 				lights[idx].type = RSG::light_storage->light_get_type(light);
++				if (lights[idx].type == RSE::LIGHT_DIRECTIONAL) {
++					continue; // Directional lights are injected through the dynamic SDFGI path every frame.
++				}
+ 
+ 				Vector3 dir = -light_transform.basis.get_column(Vector3::AXIS_Z);
+ 				Vector2 area_size = RSG::light_storage->light_area_get_size(light);
+-				if (lights[idx].type == RSE::LIGHT_DIRECTIONAL) {
+-					dir.y *= y_mult; //only makes sense for directional
+-					dir.normalize();
+-				}
+ 				lights[idx].direction[0] = dir.x;
+ 				lights[idx].direction[1] = dir.y;
+ 				lights[idx].direction[2] = dir.z;
+@@ -2575,6 +2617,7 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
+ 	dl_push_constant.bounce_feedback = 0.0; // this is static light, do not multibounce yet
+ 	dl_push_constant.y_mult = y_mult;
+ 	dl_push_constant.use_occlusion = uses_occlusion;
++	RendererRD::MaterialStorage::store_transform_transposed_3x4(p_render_data->scene_data->cam_transform.affine_inverse(), dl_push_constant.camera_inv_transform);
+ 
+ 	//all must be processed
+ 	dl_push_constant.process_offset = 0;
+@@ -2589,6 +2632,11 @@ void GI::SDFGI::render_static_lights(RenderDataRD *p_render_data, Ref<RenderScen
+ 		dl_push_constant.cascade = p_cascade_indices[i];
+ 
+ 		if (dl_push_constant.light_count > 0) {
++			if (!cc.sdf_direct_light_static_render_uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(cc.sdf_direct_light_static_render_uniform_set)) {
++				ERR_PRINT_ONCE("SDFGI static light update skipped because the render uniform set is missing.");
++				continue;
++			}
++
+ 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cc.sdf_direct_light_static_uniform_set, 0);
+ 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, cc.sdf_direct_light_static_render_uniform_set, 1);
+ 			RD::get_singleton()->compute_list_set_push_constant(compute_list, &dl_push_constant, sizeof(SDFGIShader::DirectLightPushConstant));
+@@ -3642,6 +3690,7 @@ void GI::init(SkyRD *p_sky) {
+ 	{
+ 		//calculate tables
+ 		String defines = "\n#define OCT_SIZE " + itos(SDFGI::LIGHTPROBE_OCT_SIZE) + "\n";
++		defines += "\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS " + itos(RendererSceneRender::MAX_DIRECTIONAL_LIGHTS) + "\n";
+ 
+ 		Vector<String> direct_light_modes;
+ 		direct_light_modes.push_back("\n#define MODE_PROCESS_STATIC\n");
+diff --git forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.h forkDstPrefix/servers/rendering/renderer_rd/environment/gi.h
+index bf3daee05455ebbb0d9c3aa0d05dad4fbcdbdb46..1143b2615ac596c6db3f6400bed8449dd5589257 100644
+--- forkSrcPrefix/servers/rendering/renderer_rd/environment/gi.h
++++ forkDstPrefix/servers/rendering/renderer_rd/environment/gi.h
+@@ -381,6 +381,8 @@ private:
+ 			float bounce_feedback;
+ 			float y_mult;
+ 			uint32_t use_occlusion;
++
++			float camera_inv_transform[12];
+ 		};
+ 
+ 		enum {
+@@ -680,6 +682,7 @@ public:
+ 		RSE::EnvironmentSDFGIYScale y_scale_mode = RSE::ENV_SDFGI_Y_SCALE_75_PERCENT;
+ 
+ 		float y_mult = 1.0;
++		float direct_light_camera_inv_transform[12] = {};
+ 
+ 		uint32_t version = 0;
+ 		uint32_t render_pass = 0;
+@@ -702,7 +705,7 @@ public:
+ 		void debug_draw(uint32_t p_view_count, const Projection *p_projections, const Transform3D &p_transform, int p_width, int p_height, RID p_render_target, RID p_texture, const Vector<RID> &p_texture_views);
+ 		void debug_probes(RID p_framebuffer, const uint32_t p_view_count, const Projection *p_camera_with_transforms);
+ 
+-		void pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
++		bool pre_process_gi(const Transform3D &p_transform, RenderDataRD *p_render_data);
+ 		void render_region(Ref<RenderSceneBuffersRD> p_render_buffers, int p_region, const PagedArray<RenderGeometryInstance *> &p_instances, float p_exposure_normalization);
+ 		void render_static_lights(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, uint32_t p_cascade_count, const uint32_t *p_cascade_indices, const PagedArray<RID> *p_positional_light_cull_result);
+ 	};
+diff --git forkSrcPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp forkDstPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
+index 4bfb1e10b86d9418b9320612346f9e4842598e45..e43e3fc103897be7cbfa292f213b4b12d56a9199 100644
+--- forkSrcPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
++++ forkDstPrefix/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
+@@ -1722,8 +1722,21 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 	bool ce_needs_normal_roughness = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_ROUGHNESS);
+ 	bool ce_needs_separate_specular = _compositor_effects_has_flag(p_render_data, RSE::COMPOSITOR_EFFECT_FLAG_NEEDS_SEPARATE_SPECULAR);
+ 
++	Ref<RendererRD::GI::SDFGI> sdfgi;
++	bool sdfgi_pre_processed = false;
++	bool has_sdfgi = rb->has_custom_data(RB_SCOPE_SDFGI);
++	if (has_sdfgi) {
++		sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
++		if (sdfgi.is_valid()) {
++			sdfgi->update_cascades();
++			sdfgi_pre_processed = sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
++		}
++	}
++
+ 	// sdfgi first
+-	_update_sdfgi(p_render_data);
++	if (!has_sdfgi || sdfgi_pre_processed) {
++		_update_sdfgi(p_render_data);
++	}
+ 
+ 	// assign render indices to voxel_gi_instances
+ 	for (uint32_t i = 0; i < (uint32_t)p_render_data->voxel_gi_instances->size(); i++) {
+@@ -1743,13 +1756,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 
+ 		p_render_data->voxel_gi_count = 0;
+ 
+-		if (rb->has_custom_data(RB_SCOPE_SDFGI)) {
+-			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
+-			if (sdfgi.is_valid()) {
+-				sdfgi->update_cascades();
+-				sdfgi->pre_process_gi(p_render_data->scene_data->cam_transform, p_render_data);
+-				sdfgi->update_light();
+-			}
++		if (sdfgi_pre_processed) {
++			sdfgi->update_light();
+ 		}
+ 
+ 		gi.setup_voxel_gi_instances(p_render_data, p_render_data->render_buffers, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances, p_render_data->voxel_gi_count);
+diff --git forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
+index 83bc643be9ca3e234d7062949ca3cfba14a9e04f..2e465c36ced996bf21c420f81f1b3d556c73bf8f 100644
+--- forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
++++ forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/gi.glsl
+@@ -401,7 +401,8 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
+ 			float softness = 0.2 + min(1.0, roughness * 5.0) * 4.0; //approximation to roughness so it does not seem like a hard fade
+ 			uint i = 0;
+ 			bool found = false;
+-			while (true) {
++			const uint MAX_REFLECTION_MARCH_STEPS = 256;
++			for (uint iteration_count = 0; iteration_count < MAX_REFLECTION_MARCH_STEPS; iteration_count++) {
+ 				if (length(ray_pos) >= max_distance || light_accum.a > 0.99) {
+ 					break;
+ 				}
+@@ -423,6 +424,7 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
+ 					}
+ 
+ 					fdistance /= sdfgi.cascades[i].to_cell;
++					float min_step = 0.05 / sdfgi.cascades[i].to_cell;
+ 
+ 					if (i < (sdfgi.max_cascades - 1)) {
+ 						pos = ray_pos - sdfgi.cascades[next_i].position;
+@@ -442,11 +444,18 @@ void sdfgi_process(vec3 vertex, vec3 normal, vec3 reflection, float roughness, o
+ 						float blend = clamp((length(ray_pos) - prev_radius) / (radius_sizes[i] - prev_radius), 0.0, 1.0);
+ 
+ 						fdistance2 /= sdfgi.cascades[next_i].to_cell;
++						min_step = min(min_step, 0.05 / sdfgi.cascades[next_i].to_cell);
+ 
+ 						hit_light = mix(hit_light, hit_light2, blend);
+ 						fdistance = mix(fdistance, fdistance2, blend);
+ 					}
+ 
++					if (isnan(fdistance) || isinf(fdistance)) {
++						break;
++					}
++
++					fdistance = max(fdistance, min_step);
++
+ 					light_accum += hit_light;
+ 					ray_pos += ray_dir * fdistance;
+ 					found = true;
+@@ -606,14 +615,24 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
+ 	out_blend += blend;
+ }
+ 
+-vec4 fetch_normal_and_roughness(ivec2 pos) {
+-	vec4 normal_roughness = texelFetch(sampler2D(normal_roughness_buffer, linear_sampler), pos, 0);
++vec4 fetch_raw_normal_and_roughness(ivec2 pos) {
++	return texelFetch(sampler2D(normal_roughness_buffer, linear_sampler), pos, 0);
++}
++
++vec4 decode_normal_and_roughness(vec4 normal_roughness) {
+ 	normal_roughness.xyz = normalize(normal_roughness.xyz * 2.0 - 1.0);
+ 	return normal_roughness;
+ }
+ 
+ void process_gi(ivec2 pos, vec3 vertex, inout vec4 ambient_light, inout vec4 reflection_light) {
+-	vec4 normal_roughness = fetch_normal_and_roughness(pos);
++	vec4 raw_normal_roughness = fetch_raw_normal_and_roughness(pos);
++
++	// The depth pre-pass clears the normal/roughness attachment to zero for background pixels.
++	if (all(equal(raw_normal_roughness, vec4(0.0)))) {
++		return;
++	}
++
++	vec4 normal_roughness = decode_normal_and_roughness(raw_normal_roughness);
+ 
+ 	vec3 normal = normal_roughness.xyz;
+ 
+diff --git forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
+index ea32726132b1c25fa69564ee2b4cd3ddee9c7dda..9219a98acf8e25dc80dc8592a9cd6497c583acd1 100644
+--- forkSrcPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
++++ forkDstPrefix/servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl
+@@ -60,6 +60,7 @@ cascades;
+ #define LIGHT_TYPE_AREA 3
+ 
+ #include "../area_lights_inc.glsl"
++#include "../light_data_inc.glsl"
+ 
+ struct Light {
+ 	vec3 color;
+@@ -90,6 +91,11 @@ layout(set = 0, binding = 11) uniform texture2DArray lightprobe_texture;
+ layout(set = 0, binding = 12) uniform texture3D occlusion_texture;
+ 
+ layout(set = 1, binding = 0) uniform texture2D area_light_atlas;
++layout(set = 1, binding = 1) uniform texture2D directional_shadow_atlas;
++layout(set = 1, binding = 2, std140) uniform DirectionalLights {
++	DirectionalLightData data[MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS];
++}
++directional_lights;
+ 
+ layout(push_constant, std430) uniform Params {
+ 	vec3 grid_size;
+@@ -104,9 +110,13 @@ layout(push_constant, std430) uniform Params {
+ 	float bounce_feedback;
+ 	float y_mult;
+ 	bool use_occlusion;
++
++	mat3x4 camera_inv_transform;
+ }
+ params;
+ 
++const float INV_DIRECTIONAL_SHADOW_FADE = 10.0;
++
+ vec2 octahedron_wrap(vec2 v) {
+ 	vec2 signVal;
+ 	signVal.x = v.x >= 0.0 ? 1.0 : -1.0;
+@@ -176,6 +186,43 @@ void compute_area_light(uint index, vec3 position, out float attenuation, out ve
+ 	attenuation *= ltc_diffuse;
+ }
+ 
++float get_directional_shadow_attenuation(uint directional_index, vec3 position) {
++	DirectionalLightData directional_light = directional_lights.data[directional_index];
++	if (directional_light.shadow_opacity <= 0.001) {
++		return 1.0;
++	}
++
++	// SDFGI stores positions in a Y-scaled space, but the directional shadow matrices use camera view space.
++	position.y /= params.y_mult;
++	vec3 view_pos = vec4(position, 1.0) * params.camera_inv_transform;
++	float depth_z = -view_pos.z;
++
++	vec4 pssm_coord;
++	float z_range;
++	vec4 v = vec4(view_pos, 1.0);
++
++	if (depth_z < directional_light.shadow_split_offsets.x) {
++		pssm_coord = directional_light.shadow_matrix1 * v;
++		z_range = directional_light.shadow_z_range.x;
++	} else if (depth_z < directional_light.shadow_split_offsets.y) {
++		pssm_coord = directional_light.shadow_matrix2 * v;
++		z_range = directional_light.shadow_z_range.y;
++	} else if (depth_z < directional_light.shadow_split_offsets.z) {
++		pssm_coord = directional_light.shadow_matrix3 * v;
++		z_range = directional_light.shadow_z_range.z;
++	} else {
++		pssm_coord = directional_light.shadow_matrix4 * v;
++		z_range = directional_light.shadow_z_range.w;
++	}
++
++	pssm_coord /= pssm_coord.w;
++	float depth = texture(sampler2D(directional_shadow_atlas, linear_sampler), pssm_coord.xy).r;
++	float shadow = exp(min(0.0, (pssm_coord.z - depth)) * z_range * INV_DIRECTIONAL_SHADOW_FADE);
++
++	shadow = mix(shadow, 1.0, smoothstep(directional_light.fade_from, directional_light.fade_to, view_pos.z));
++	return mix(1.0 - directional_light.shadow_opacity, 1.0, shadow);
++}
++
+ void main() {
+ 	uint voxel_index = uint(gl_GlobalInvocationID.x);
+ 
+@@ -324,6 +371,10 @@ void main() {
+ 		switch (lights.data[i].type) {
+ 			case LIGHT_TYPE_DIRECTIONAL: {
+ 				direction = -lights.data[i].direction;
++				if (lights.data[i].has_shadow) {
++					// Directional lights store their shared shadow-buffer index in the otherwise-unused radius field.
++					attenuation *= get_directional_shadow_attenuation(uint(lights.data[i].radius), position);
++				}
+ 			} break;
+ 			case LIGHT_TYPE_OMNI: {
+ 				vec3 rel_vec = lights.data[i].position - position;
